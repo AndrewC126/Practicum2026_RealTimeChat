@@ -34,6 +34,18 @@ export async function createRoom({ name, description, isPrivate, ownerId }) {
     throw err;
   }
 
+  // Check for a duplicate name before hitting the DB constraint.
+  // This gives a specific 409 error message instead of a raw DB error.
+  // The DB UNIQUE constraint on rooms.name is still the definitive safety net
+  // for race conditions (two users creating a room with the same name at the
+  // exact same millisecond), but that edge case is caught by error.middleware.
+  const existing = await roomsRepo.findByName(name.trim());
+  if (existing) {
+    const err = new Error('Room name is already taken');
+    err.status = 409;
+    throw err;
+  }
+
   const room = await roomsRepo.createRoom({
     name: name.trim(),
     description: description?.trim() || null,

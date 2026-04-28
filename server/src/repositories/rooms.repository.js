@@ -38,6 +38,16 @@ export async function findAllPublic() {
   return rows;
 }
 
+export async function findByName(name) {
+  // Case-insensitive check — prevents "General" and "general" being treated
+  // as different rooms, which would confuse users.
+  const { rows } = await pool.query(
+    'SELECT id FROM rooms WHERE lower(name) = lower($1)',
+    [name]
+  );
+  return rows[0] ?? null;
+}
+
 export async function findById(id) {
   const { rows } = await pool.query(
     'SELECT * FROM rooms WHERE id = $1',
