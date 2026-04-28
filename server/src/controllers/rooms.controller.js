@@ -1,28 +1,55 @@
 /**
- * Rooms Controller — HTTP Request Handlers for Room Management
+ * Rooms Controller — HTTP Request Handlers
  *
- * listRooms(req, res, next):
- *   - Read req.user.id (set by requireAuth)
- *   - Call roomsService.getRooms(userId) to get public rooms + user's private rooms
- *   - Respond with 200 and the rooms array
+ * ─── CONTROLLER RESPONSIBILITIES ─────────────────────────────────────────────
+ * 1. Read data from the request  (req.body, req.params, req.query, req.user)
+ * 2. Call the service layer
+ * 3. Send the HTTP response
+ * 4. Forward errors to next(err) — the central error handler in error.middleware
+ *    converts the error into a JSON response with the right status code.
  *
- * createRoom(req, res, next):
- *   - Read { name, description, isPrivate } from req.body
- *   - Read req.user.id as the owner
- *   - Validate name is present and within length limits
- *   - Call roomsService.createRoom({ name, description, isPrivate, ownerId })
- *   - Respond with 201 and the created room object
+ * Controllers never write SQL and never contain business rules — those belong
+ * in the service and repository layers respectively.
  *
- * leaveRoom(req, res, next):
- *   - Read req.params.id as the roomId
- *   - Read req.user.id as the userId
- *   - Call roomsService.leaveRoom(roomId, userId)
- *   - Handle edge case: if the user is the room owner, should the room be
- *     deleted or transferred to another member? (design decision for you to make)
- *   - Respond with 204 No Content on success
- *
- * See auth.controller.js for notes on the try/catch async pattern.
+ * ─── req.user ────────────────────────────────────────────────────────────────
+ * req.user is attached by the requireAuth middleware BEFORE this function runs.
+ * It contains the decoded JWT payload: { id, username }.
+ * We use req.user.id wherever we need to know which user made the request.
  */
-export async function listRooms(req, res, next) {}
-export async function createRoom(req, res, next) {}
-export async function leaveRoom(req, res, next) {}
+import * as roomsService from '../services/rooms.service.js';
+
+export async function listRooms(req, res, next) {
+  try {
+    const rooms = await roomsService.getRooms();
+    res.status(200).json(rooms);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createRoom(req, res, next) {
+  try {
+    const { name, description, isPrivate } = req.body;
+    const ownerId = req.user.id; // set by requireAuth
+
+    const room = await roomsService.createRoom({ name, description, isPrivate, ownerId });
+    res.status(201).json(room);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function leaveRoom(req, res, next) {
+  try {
+    // req.params.id is the :id segment from the URL: DELETE /api/rooms/:id/members
+    const roomId = req.params.id;
+    const userId = req.user.id;
+
+    await roomsService.leaveRoom(roomId, userId);
+
+    // 204 No Content: success, but nothing to send back
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+}

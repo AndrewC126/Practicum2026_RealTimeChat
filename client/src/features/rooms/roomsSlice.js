@@ -1,36 +1,59 @@
 /**
- * Rooms Redux Slice — Ephemeral Room UI State
+ * Rooms Redux Slice — Active Room UI State
  *
- * Tracks which room the user is currently viewing. The room LIST itself is
- * server data and lives in React Query's cache (see useRooms). Only the
- * "which room is active right now" piece belongs in Redux.
+ * ─── WHY THIS IS IN REDUX ────────────────────────────────────────────────────
+ * Multiple unrelated components all need to react to which room is currently
+ * active:
+ *   • RoomItem   — highlight the selected room in the sidebar
+ *   • ChatPanel  — fetch and display messages for the active room
+ *   • MemberList — show the members of the active room
  *
- * State shape:
- *   {
- *     activeRoomId: string | null   // UUID of the room the user is looking at
- *   }
+ * If we stored activeRoomId in one component's local state (useState), we'd
+ * have to "lift" it up through multiple levels of props — messy and fragile.
+ * Putting it in Redux lets every component read it directly with useSelector.
  *
- * Why this belongs in Redux and not local state:
- *   Multiple unrelated components need to react to the active room:
- *   - ChatPanel fetches messages for the active room
- *   - MemberList shows members of the active room
- *   - RoomItem highlights the currently active room in the sidebar
- *   Lifting this into Redux makes it accessible everywhere without prop drilling.
+ * ─── WHAT DOES NOT GO HERE ───────────────────────────────────────────────────
+ * The room LIST (names, descriptions, member counts) is server data. It belongs
+ * in React Query's cache (see useRooms.js), not in Redux. Redux only holds the
+ * one piece of UI state that can't be derived from the server: "which room is
+ * the user looking at right now?"
  *
- * Reducers to implement:
- *   setActiveRoom(state, action)
- *     payload: roomId (string) | null
- *     Sets state.activeRoomId = action.payload.
- *     Also dispatches clearUnread({ roomId }) from chatSlice so unread count
- *     resets when the user opens the room. (Dispatch that from the component,
- *     not from this reducer, to keep slices independent.)
+ * ─── HOW createSlice WORKS ───────────────────────────────────────────────────
+ * Redux Toolkit's createSlice() generates three things at once from one config:
+ *   1. The reducer function (handles state transitions)
+ *   2. Action creator functions (e.g., setActiveRoom('abc-123'))
+ *   3. Action type strings (e.g., 'rooms/setActiveRoom') — used internally
  *
- * Implementation checklist:
- *   1. import { createSlice } from '@reduxjs/toolkit'
- *   2. initialState: { activeRoomId: null }
- *   3. setActiveRoom reducer
- *   4. Export action creators and reducer
- *   5. Export selector: export const selectActiveRoomId = state => state.rooms.activeRoomId
+ * You only export and use the action creators; Redux Toolkit handles the rest.
  */
+import { createSlice } from '@reduxjs/toolkit';
 
-// Redux slice for ephemeral rooms state (active room)
+const roomsSlice = createSlice({
+  name: 'rooms',
+  initialState: {
+    activeRoomId: null, // null = no room selected (the default landing state)
+  },
+  reducers: {
+    /**
+     * setActiveRoom — change which room is currently active.
+     *
+     * Redux Toolkit uses Immer under the hood, so even though this looks like
+     * a mutation (state.activeRoomId = ...), Immer intercepts it and produces
+     * a new immutable state object. You never mutate state directly in plain Redux.
+     */
+    setActiveRoom(state, action) {
+      state.activeRoomId = action.payload; // payload is a roomId string or null
+    },
+  },
+});
+
+export const { setActiveRoom } = roomsSlice.actions;
+
+// Selector — a function that reads a slice of state.
+// Components call: const activeRoomId = useSelector(selectActiveRoomId)
+// instead of: useSelector(state => state.rooms.activeRoomId)
+// This keeps the shape of the state in one place — if we rename the key
+// we only update the selector, not every component that uses it.
+export const selectActiveRoomId = state => state.rooms.activeRoomId;
+
+export default roomsSlice.reducer;

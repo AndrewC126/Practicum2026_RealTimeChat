@@ -1,31 +1,74 @@
 /**
  * RoomItem — Single Room Row in the Sidebar
  *
- * A presentational component (it has no own data-fetching logic). Receives
- * everything it needs as props from RoomList.
+ * ─── PRESENTATIONAL vs. CONTAINER COMPONENTS ─────────────────────────────────
+ * RoomItem is a "presentational" component — it only renders what it is given
+ * through props. It has no data-fetching logic of its own.
  *
- * Props:
- *   room        — { id, name, description, member_count, last_message_at }
- *   isActive    — bool: true if this room matches activeRoomId in Redux
- *   unreadCount — number: unread message count for this room (0 = no badge)
- *   onClick     — function: called when the user clicks this room
+ * RoomList (the parent) is the "container" component — it fetches data and
+ * passes it down. This separation means:
+ *   • RoomItem is trivial to test: give it props, check the output.
+ *   • If the data source changes, only RoomList needs updating, not RoomItem.
  *
- * Visual design:
- *   - Apply an "active" CSS class when isActive to highlight the selected room
- *   - Show the unread count as a small badge (pill) if unreadCount > 0
- *   - Show a lock icon if room.is_private
- *   - Show member_count as secondary text
- *
- * Presentational vs. container components:
- *   RoomItem is "dumb" — it only renders what it is given. RoomList is the
- *   "smart" component that fetches data and passes it down. This separation
- *   makes RoomItem easy to test in isolation.
- *
- * Implementation checklist:
- *   - Accept the props listed above
- *   - Render a <li> or <button> that calls onClick when clicked
- *   - Conditional "active" class using isActive
- *   - Conditional badge using unreadCount
- *   - Conditional lock icon using room.is_private
+ * ─── PROPS ───────────────────────────────────────────────────────────────────
+ * room     — the room object from the API: { id, name, description, member_count }
+ * isActive — whether this room is the currently selected one (from Redux)
+ * onClick  — called when the user clicks the row (dispatches setActiveRoom)
  */
-export default function RoomItem() {}
+export default function RoomItem({ room, isActive, onClick }) {
+  return (
+    // Using a <button> instead of a <div> gives keyboard navigation and
+    // screen-reader accessibility for free — clicking with Tab + Enter works.
+    <button
+      onClick={onClick}
+      style={{ ...styles.item, ...(isActive ? styles.itemActive : {}) }}
+      // aria-current tells screen readers which item is selected, equivalent
+      // to the visual highlight
+      aria-current={isActive ? 'true' : undefined}
+    >
+      {/* The # prefix is a chat convention (like Slack/Discord channel names) */}
+      <span style={styles.name}># {room.name}</span>
+
+      {/* description is optional — only render the element when it exists (US-201 AC) */}
+      {room.description && (
+        <span style={styles.description}>{room.description}</span>
+      )}
+    </button>
+  );
+}
+
+const styles = {
+  item: {
+    // Reset browser default button styles, then apply our own
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: '2px',
+    width: '100%',
+    padding: '0.5rem 0.75rem',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    textAlign: 'left',
+    color: '#c9cdd4',
+    transition: 'background 0.1s',
+  },
+  itemActive: {
+    background: 'rgba(255,255,255,0.15)',
+    color: '#fff',
+  },
+  name: {
+    fontSize: '0.9rem',
+    fontWeight: 500,
+  },
+  description: {
+    fontSize: '0.75rem',
+    opacity: 0.7,
+    // Clamp to one line with an ellipsis so long descriptions don't break layout
+    overflow: 'hidden',
+    whiteSpace: 'nowrap',
+    textOverflow: 'ellipsis',
+    width: '100%',
+  },
+};

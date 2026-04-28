@@ -1,36 +1,54 @@
 /**
  * Rooms Service — Business Logic for Room Management
  *
- * getRooms(userId):
- *   Returns all rooms the user can see:
- *   - All public rooms (is_private = false)
- *   - Private rooms where the user is a member
- *   Call roomsRepository.findAllPublic() and merge with the user's private rooms.
- *   Alternatively, write a single SQL query with a LEFT JOIN on room_members.
+ * ─── THE SERVICE LAYER'S JOB ─────────────────────────────────────────────────
+ * The service sits between the controller (HTTP layer) and the repository (SQL
+ * layer). It contains rules like:
+ *   "before creating a room, validate the name length"
+ *   "when a user joins a room, auto-add them to room_members"
  *
- * createRoom(data):
- *   data: { name, description, isPrivate, ownerId }
- *   1. Validate name length (1–50 chars) — matches DB constraint
- *   2. Call roomsRepository.createRoom(data) to insert the room
- *   3. Call roomsRepository.addMember(room.id, ownerId) to add the owner
- *      as the first member automatically
- *   4. Return the created room object
- *
- * leaveRoom(roomId, userId):
- *   1. Call roomsRepository.removeMember(roomId, userId)
- *   2. Optional: if the leaving user was the owner and no members remain,
- *      delete the room. Or transfer ownership to the next member.
- *   3. Return void
- *
- * joinRoom(roomId, userId):
- *   Called from the socket handler when a user joins a room via Socket.io.
- *   1. Verify the room exists (findById)
- *   2. Verify it is not private (or the user already has access)
- *   3. Call roomsRepository.addMember(roomId, userId)
- *      addMember should be idempotent (INSERT ... ON CONFLICT DO NOTHING)
- *      so calling it twice doesn't error
+ * Controllers should not write SQL, and repositories should not know about
+ * business rules. Keeping these concerns in separate layers makes each layer
+ * independently testable and replaceable.
  */
-export async function getRooms() {}
-export async function createRoom(data) {}
-export async function joinRoom(roomId, userId) {}
-export async function leaveRoom(roomId, userId) {}
+import * as roomsRepo from '../repositories/rooms.repository.js';
+
+export async function getRooms() {
+  // No business logic needed here yet — just delegate to the repository.
+  // The service layer still exists so that if we later need to add logic
+  // (e.g., filter rooms by user permissions), it goes here, not in the controller.
+  return roomsRepo.findAllPublic();
+}
+
+export async function createRoom({ name, description, isPrivate, ownerId }) {
+  // Validate name length to match the DB CHECK constraint (1–50 chars).
+  // Catching this here gives a friendly 400 error instead of a cryptic DB error.
+  if (!name?.trim()) {
+    const err = new Error('Room name is required');
+    err.status = 400;
+    throw err;
+  }
+  if (name.trim().length > 50) {
+    const err = new Error('Room name must be 50 characters or fewer');
+    err.status = 400;
+    throw err;
+  }
+
+  const room = await roomsRepo.createRoom({
+    name: name.trim(),
+    description: description?.trim() || null,
+    isPrivate: isPrivate ?? false,
+    ownerId,
+  });
+
+  // Automatically add the creator as the first member (US-202 AC).
+  // addMember is idempotent so this is safe to call even if somehow they
+  // are already a member.
+  await roomsRepo.addMember(room.id, ownerId);
+
+  return room;
+}
+
+export async function leaveRoom(roomId, userId) {
+  await roomsRepo.removeMember(roomId, userId);
+}

@@ -25,7 +25,8 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import authRouter from './routes/auth.routes.js';
+import authRouter  from './routes/auth.routes.js';
+import roomsRouter from './routes/rooms.routes.js';
 import { errorHandler } from './middleware/error.middleware.js';
 
 const app = express();
@@ -38,7 +39,8 @@ app.use(express.json());
 // Allow the Vite dev server (CLIENT_URL) to call the API without CORS errors
 app.use(cors({ origin: process.env.CLIENT_URL }));
 
-app.use('/api/auth', authRouter);
+app.use('/api/auth',  authRouter);
+app.use('/api/rooms', roomsRouter);
 
 // Error handler must be registered after all routes
 app.use(errorHandler);
