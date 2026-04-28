@@ -1,32 +1,103 @@
 /**
  * Root Application Component
  *
- * App is the top of the component tree. Its main responsibilities are:
+ * This file owns the entire route tree. Understanding the structure:
  *
- * 1. Routing — decide which "page" to render based on the URL.
- *    This project uses React Router. Core concepts:
- *      <BrowserRouter>   wraps the app so components can read the URL
- *      <Routes>          container that picks the first matching <Route>
- *      <Route path="/" element={<Layout />}>  renders Layout for "/"
- *        <Route index element={<ChatPanel />} />  default child route
- *        <Route path="login" element={<LoginForm />} />
- *        <Route path="register" element={<RegisterForm />} />
- *      </Route>
+ * ─── ROUTE NESTING IN REACT ROUTER v6 ───────────────────────────────────────
+ * Routes can be nested inside one another. A parent route renders its
+ * `element` and puts an <Outlet /> somewhere inside it. Child routes render
+ * into that Outlet.
  *
- * 2. Auth gate — redirect unauthenticated users to /login.
- *    Use the `useAuth` hook to read auth state from Redux, then render a
- *    <Navigate to="/login" replace /> if there is no current user.
- *    Wrap protected routes in a small <RequireAuth> component for reuse.
+ * Here we use a "layout route" — a route with no `path` of its own, whose
+ * only job is to wrap child routes with a shared UI shell:
  *
- * 3. Socket initialization — call `useSocket()` here (or in a useEffect)
- *    so the socket connects once when the app mounts after login and
- *    disconnects when the user logs out.
+ *   <Route element={<RequireAuth><Layout /></RequireAuth>}>
+ *     <Route path="/" element={<ChatPanel />} />
+ *   </Route>
  *
- * Implementation checklist:
- *   - Import BrowserRouter, Routes, Route, Navigate from react-router-dom
- *   - Import Layout, LoginForm, RegisterForm, ChatPanel
- *   - Import useAuth from features/auth/hooks/useAuth
- *   - Build the route tree described above
- *   - Add a RequireAuth wrapper that checks useAuth().user
+ * React Router matches "/" → renders RequireAuth → renders Layout →
+ * renders ChatPanel inside Layout's <Outlet />.
+ *
+ * ─── REQUIREAUTH ─────────────────────────────────────────────────────────────
+ * RequireAuth reads the JWT token from Redux. If it's null (not logged in),
+ * it renders <Navigate to="/login" replace /> instead of its children.
+ *
+ * `replace` is important: it replaces the current history entry instead of
+ * pushing a new one. This means after a successful login and redirect to "/",
+ * the user pressing "back" goes to the login page — not to "/" again (which
+ * would instantly redirect them back to "/login" in a confusing loop).
+ *
+ * ─── UNAUTHENTICATED ROUTES ──────────────────────────────────────────────────
+ * /login and /register are rendered outside RequireAuth so users who are not
+ * logged in can always reach them.
+ *
+ * The catch-all <Route path="*"> redirects any unknown URL to /login.
  */
-export default function App() {}
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useSelector } from 'react-redux';
+import LoginForm    from './features/auth/components/LoginForm';
+import RegisterForm from './features/auth/components/RegisterForm';
+import Layout       from './shared/components/Layout';
+
+/**
+ * RequireAuth — Auth Guard Component
+ *
+ * Wraps protected routes. If the user has no token, redirect them to /login
+ * before they can see any protected content.
+ *
+ * Why check the token rather than the user object?
+ *   On a page refresh, the Redux store is rebuilt from localStorage. The
+ *   token is restored by authSlice's initialState, but the `user` object
+ *   (name, email, etc.) is not — it would need a server round-trip to restore.
+ *   Checking `token` lets users stay "logged in" across refreshes while we
+ *   defer fetching the full user profile until the chat UI is built.
+ */
+function RequireAuth({ children }) {
+  const token = useSelector(state => state.auth.token);
+  if (!token) return <Navigate to="/login" replace />;
+  return children;
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+
+        {/* ── Public routes — no auth required ── */}
+        <Route path="/login"    element={<LoginForm />} />
+        <Route path="/register" element={<RegisterForm />} />
+
+        {/*
+         * ── Protected layout route ──
+         * No `path` here — this route only wraps its children with auth
+         * checking and the persistent Layout shell (header + logout button).
+         * Every route nested inside here is automatically protected.
+         */}
+        <Route
+          element={
+            <RequireAuth>
+              <Layout />
+            </RequireAuth>
+          }
+        >
+          {/*
+           * index route: matches exactly "/"
+           * This placeholder will be replaced by <ChatPanel /> once built.
+           */}
+          <Route
+            index
+            element={
+              <div style={{ padding: '2rem' }}>
+                Chat coming soon — you are logged in!
+              </div>
+            }
+          />
+        </Route>
+
+        {/* Catch-all: redirect any unknown URL to /login */}
+        <Route path="*" element={<Navigate to="/login" replace />} />
+
+      </Routes>
+    </BrowserRouter>
+  );
+}

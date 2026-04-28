@@ -1,39 +1,64 @@
-/**
- * Auth Service — Business Logic for Authentication
- *
- * Services contain the "what" of the application: rules, validations, and
- * orchestration of repository calls. They are framework-agnostic — no req/res,
- * no SQL. This makes them easy to unit-test.
- *
- * registerUser(data):
- *   data: { username, email, password }
- *   1. Call usersRepository.findByEmail(email) — throw a 409 Conflict error
- *      if the email already exists.
- *   2. Hash the password:
- *        const hash = await bcrypt.hash(password, 12);
- *        The second argument (12) is the "cost factor" — higher is slower but
- *        more secure against brute-force attacks. 10–12 is typical for web apps.
- *   3. Call usersRepository.createUser({ username, email, passwordHash: hash })
- *   4. Sign a JWT:
- *        const token = jwt.sign(
- *          { id: user.id, username: user.username },
- *          process.env.JWT_SECRET,
- *          { expiresIn: '7d' }
- *        );
- *   5. Return { user: { id, username, email }, token }
- *      Never return the password_hash in the user object.
- *
- * loginUser(data):
- *   data: { email, password }
- *   1. Call usersRepository.findByEmail(email) — throw 401 if not found
- *      (use the same generic message for not-found and wrong-password to
- *       prevent email enumeration attacks: "Invalid email or password")
- *   2. Compare the password: await bcrypt.compare(password, user.password_hash)
- *      Returns true if it matches the stored hash.
- *   3. If mismatch: throw a 401 error
- *   4. Sign and return a JWT the same way as registerUser
- */
-
 // bcrypt hashing, JWT signing/verification
-export async function registerUser(data) {}
-export async function loginUser(data) {}
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import * as usersRepo from '../repositories/users.repository.js';
+
+export async function registerUser({ username, email, password }) {
+  // Check uniqueness before inserting so the error message is specific.
+  // The DB UNIQUE constraints are a safety net for race conditions.
+  const existingEmail = await usersRepo.findByEmail(email);
+  if (existingEmail) {
+    const err = new Error('Email is already registered');
+    err.status = 409;
+    throw err;
+  }
+
+  const existingUsername = await usersRepo.findByUsername(username);
+  if (existingUsername) {
+    const err = new Error('Username is already taken');
+    err.status = 409;
+    throw err;
+  }
+
+  // Cost factor 12: slow enough to resist brute-force, fast enough for a web request
+  const passwordHash = await bcrypt.hash(password, 12);
+  const user = await usersRepo.createUser({ username, email, passwordHash });
+
+  const token = jwt.sign(
+    { id: user.id, username: user.username },
+    process.env.JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+
+  return { user, token };
+}
+
+export async function loginUser({ email, password }) {
+  const user = await usersRepo.findByEmail(email);
+
+  // Use the same generic message whether the email doesn't exist or the
+  // password is wrong — revealing which field is incorrect would let an
+  // attacker enumerate valid email addresses (AC: US-102).
+  if (!user) {
+    const err = new Error('Invalid email or password');
+    err.status = 401;
+    throw err;
+  }
+
+  const match = await bcrypt.compare(password, user.password_hash);
+  if (!match) {
+    const err = new Error('Invalid email or password');
+    err.status = 401;
+    throw err;
+  }
+
+  const token = jwt.sign(
+    { id: user.id, username: user.username },
+    process.env.JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+
+  // Never return password_hash — strip it before sending to the client
+  const { password_hash, ...safeUser } = user;
+  return { user: safeUser, token };
+}
