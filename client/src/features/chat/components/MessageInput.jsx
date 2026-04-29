@@ -138,9 +138,36 @@ export default function MessageInput({ roomId, onKeyDown, onAfterSend }) {
 
     // setQueryData updates the React Query cache synchronously.
     // Any component subscribed to ['messages', roomId] re-renders immediately.
-    queryClient.setQueryData(['messages', roomId], prev =>
-      [...(prev ?? []), optimisticMessage]
-    );
+    //
+    // IMPORTANT — useInfiniteQuery cache shape:
+    // useInfiniteQuery does NOT store a plain array. Its cache looks like:
+    //   { pages: [ [msg, msg, ...], [msg, ...] ], pageParams: [0, 50, ...] }
+    //
+    // Each inner array is one "page" (one batch of 50 messages). New messages
+    // always belong at the END of the LAST page, because that page holds the
+    // most recent messages and new ones are even more recent.
+    //
+    // This is a common mistake when mixing useInfiniteQuery with manual
+    // setQueryData calls — treating the cache as a flat array will silently
+    // produce wrong output (spreading a non-array object gives []).
+    queryClient.setQueryData(['messages', roomId], (old) => {
+      // Edge case: cache is empty (messages haven't loaded yet).
+      // Create the minimal valid infinite-query structure to hold this message.
+      if (!old) {
+        return { pages: [[optimisticMessage]], pageParams: [0] };
+      }
+
+      // Append the optimistic message to the END of the LAST page.
+      // Spread { ...old } to preserve pageParams and React Query metadata.
+      const lastPageIndex = old.pages.length - 1;
+      return {
+        ...old,
+        pages: [
+          ...old.pages.slice(0, lastPageIndex),          // all earlier pages unchanged
+          [...old.pages[lastPageIndex], optimisticMessage], // last page + new message
+        ],
+      };
+    });
 
     // ── Step 3: Emit to the server with an acknowledgment callback ─────────
     // The server saves the message, broadcasts it to OTHER users, then calls
@@ -148,16 +175,27 @@ export default function MessageInput({ roomId, onKeyDown, onAfterSend }) {
     socket.emit('send_message', { roomId, body }, (response) => {
       if (response?.ok) {
         // ── Step 4a: Replace temp message with the real saved message ──────
-        // Map over the cache: swap the temp entry for the DB-authoritative one.
-        // response.message has the real UUID id and PostgreSQL created_at.
-        queryClient.setQueryData(['messages', roomId], prev =>
-          (prev ?? []).map(m => m.id === tempId ? response.message : m)
-        );
+        // The real message has the DB-generated UUID and authoritative created_at.
+        // We must search every page for the temp id and swap it in place.
+        queryClient.setQueryData(['messages', roomId], (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map(page =>
+              page.map(m => m.id === tempId ? response.message : m)
+            ),
+          };
+        });
       } else {
         // ── Step 4b: Remove the optimistic message and show an error ───────
-        queryClient.setQueryData(['messages', roomId], prev =>
-          (prev ?? []).filter(m => m.id !== tempId)
-        );
+        // Filter the temp message out of whichever page it ended up in.
+        queryClient.setQueryData(['messages', roomId], (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map(page => page.filter(m => m.id !== tempId)),
+          };
+        });
         setSendError(response?.message ?? 'Failed to send. Try again.');
       }
     });
