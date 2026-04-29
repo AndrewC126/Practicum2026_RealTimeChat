@@ -20,7 +20,10 @@ import * as roomsService from '../services/rooms.service.js';
 
 export async function listRooms(req, res, next) {
   try {
-    const rooms = await roomsService.getRooms();
+    // Pass the requesting user's ID so the service/repo can filter the room
+    // list to only rooms this user is a member of (US-204: leaving a room
+    // removes it from the user's sidebar after the next fetch).
+    const rooms = await roomsService.getRooms(req.user.id);
     res.status(200).json(rooms);
   } catch (err) {
     next(err);

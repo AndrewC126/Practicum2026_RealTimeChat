@@ -1,35 +1,196 @@
 /**
- * Chat Socket Handler — Message Send & Broadcast (US-301, US-302)
+ * Chat Socket Handler (US-203, US-204, US-301)
  *
- * Registered once per connection in socket/index.js. Handles the 'send_message'
- * event: persists the message to the database and broadcasts it to the room.
+ * Registered once per connection inside initSocket. Handles three events:
  *
- * Event flow for sending a message:
- *   1. Client emits:  socket.emit('send_message', { roomId, body })
- *   2. This handler receives the event
- *   3. Validate: body must be 1–1000 characters, roomId must exist
- *   4. Persist: call messagesService.saveMessage({ roomId, senderId, body })
- *   5. Broadcast: io.to(roomId).emit('new_message', savedMessage)
- *      io.to(roomId) sends to ALL sockets in that Socket.io room,
- *      including the sender (so their message appears immediately).
+ *   join_room    — user opens a room in the sidebar (US-203)
+ *   leave_room   — user confirms leaving a room (US-204)
+ *   send_message — user sends a chat message (US-301)
  *
- * Error handling for socket events:
- *   Unlike HTTP handlers there is no res.status(400). Instead, emit an error
- *   event back to the sender only:
- *     socket.emit('error', { message: 'Message body is required' });
+ * ─── SOCKET.IO ROOMS vs CHAT ROOMS ───────────────────────────────────────────
+ * Socket.io has its own concept of "rooms" — named channels that sockets can
+ * subscribe to. They are completely separate from our app's chat rooms table,
+ * but we use the same UUID as the channel name so they map 1-to-1:
  *
- * Implementation:
- *   export function registerChatHandlers(io, socket) {
- *     socket.on('send_message', async ({ roomId, body }) => {
- *       try {
- *         const { id: senderId, username } = socket.data.user;
- *         // validate, save, broadcast
- *       } catch (err) {
- *         socket.emit('error', { message: err.message });
- *       }
- *     });
- *   }
+ *   socket.join(roomId)
+ *     → This socket now receives any event emitted to io.to(roomId)
+ *
+ *   socket.leave(roomId)
+ *     → This socket stops receiving events emitted to io.to(roomId)
+ *
+ *   io.to(roomId).emit('new_message', msg)
+ *     → Delivers 'new_message' to EVERY socket in the room, including sender
+ *
+ *   socket.to(roomId).emit('new_message', msg)
+ *     → Delivers 'new_message' to all sockets in the room EXCEPT the sender
+ *
+ * ─── WHY io.to() for system messages but socket.to() for user messages ────────
+ *
+ *   System messages (join/leave):
+ *     Use io.to(roomId) so the person joining/leaving also sees the message
+ *     in their own feed. Their message history needs to include it.
+ *
+ *   User messages (send_message):
+ *     Use socket.to(roomId) so the message is NOT sent back to the sender
+ *     via the 'new_message' event. Instead, the sender receives their own
+ *     message via the ACKNOWLEDGMENT callback (ack). This is the optimistic
+ *     update pattern — the sender sees their message immediately on send,
+ *     without a full broadcast round-trip.
+ *
+ * ─── SOCKET.IO ACKNOWLEDGMENTS ───────────────────────────────────────────────
+ * The client can pass a callback as the last argument to socket.emit():
+ *
+ *   // Client
+ *   socket.emit('send_message', { roomId, body }, function(response) {
+ *     // response = { ok: true, message: {...} } on success
+ *     // Called when the SERVER calls ack(response) below
+ *   });
+ *
+ *   // Server
+ *   socket.on('send_message', async ({ roomId, body }, ack) => {
+ *     const message = await save();
+ *     ack({ ok: true, message }); // fires the client callback
+ *   });
+ *
+ * Benefits of acks for send_message:
+ *   1. The sender gets back the REAL message (with DB-generated id + created_at)
+ *      to replace their optimistic message in the cache.
+ *   2. The sender's optimistic message appears BEFORE the server round-trip —
+ *      satisfying the "appears immediately" AC.
+ *   3. If saving fails, ack({ ok: false }) lets the client show an error and
+ *      remove the optimistic message.
+ *
+ * ─── ERROR HANDLING IN SOCKET EVENTS ─────────────────────────────────────────
+ * There is no res.status(400) in Socket.io. Errors go back via:
+ *   - ack({ ok: false, message: '…' }) for promise-based callers
+ *   - socket.emit('error', { message: '…' }) for generic error listeners
  */
+import * as roomsRepo      from '../../repositories/rooms.repository.js';
+import * as messagesRepo   from '../../repositories/messages.repository.js';
+import * as messagesService from '../../services/messages.service.js';
 
-// send_message event → persist to DB → broadcast to room (US-301, US-302)
-export function registerChatHandlers(io, socket) {}
+export function registerChatHandlers(io, socket) {
+  // ── join_room ──────────────────────────────────────────────────────────────
+  socket.on('join_room', async ({ roomId }) => {
+    try {
+      const { id: userId, username } = socket.data.user;
+
+      // Subscribe this socket to the Socket.io channel for the room.
+      // After this, io.to(roomId).emit() will reach this client.
+      socket.join(roomId);
+
+      // Idempotently add the user to room_members.
+      // Returns true only when a NEW row was inserted (first-ever join).
+      const isNewMember = await roomsRepo.addMember(roomId, userId);
+
+      // Only broadcast a "joined" system message on the very first join.
+      // Re-opening a room the user already belongs to is silent.
+      if (isNewMember) {
+        const saved = await messagesRepo.create({
+          roomId,
+          senderId: userId,
+          body: `${username} has joined the room`,
+          isSystemMessage: true,
+        });
+
+        // Attach username manually — INSERT RETURNING doesn't JOIN users.
+        const message = { ...saved, sender_username: username };
+
+        // io.to() includes the joining socket so they also see the system message.
+        io.to(roomId).emit('new_message', message);
+      }
+    } catch (err) {
+      console.error('join_room error:', err);
+      socket.emit('error', { message: 'Could not join room' });
+    }
+  });
+
+  // ── leave_room ─────────────────────────────────────────────────────────────
+  socket.on('leave_room', async ({ roomId }, ack) => {
+    try {
+      const { id: userId, username } = socket.data.user;
+
+      // Remove from room_members — after this, GET /api/rooms no longer
+      // includes this room for this user (filtered by membership).
+      await roomsRepo.removeMember(roomId, userId);
+
+      // Create the "has left" system message.
+      const saved = await messagesRepo.create({
+        roomId,
+        senderId: userId,
+        body:     `${username} has left the room`,
+        isSystemMessage: true,
+      });
+
+      const message = { ...saved, sender_username: username };
+
+      // Broadcast BEFORE socket.leave() so the leaving user also receives
+      // the system message and sees it in their feed before the panel closes.
+      io.to(roomId).emit('new_message', message);
+
+      // Unsubscribe from the Socket.io channel.
+      // Future io.to(roomId) calls will no longer reach this client.
+      socket.leave(roomId);
+
+      // Signal success to the client's ack callback.
+      if (typeof ack === 'function') ack({ ok: true });
+
+    } catch (err) {
+      console.error('leave_room error:', err);
+      if (typeof ack === 'function') ack({ ok: false, message: 'Could not leave room' });
+      socket.emit('error', { message: 'Could not leave room' });
+    }
+  });
+
+  // ── send_message ───────────────────────────────────────────────────────────
+  //
+  // Flow:
+  //   1. Client optimistically adds message to local cache (appears immediately)
+  //   2. Client emits 'send_message' with an ack callback
+  //   3. Server validates + saves the message to the DB
+  //   4. Server broadcasts to everyone in the room EXCEPT the sender
+  //      (socket.to() excludes the sender — they already have the optimistic copy)
+  //   5. Server calls ack({ ok: true, message: savedMessage })
+  //   6. Client replaces their optimistic message with the real saved message
+  //      (which has the actual DB-generated id and created_at)
+  //
+  // Why socket.to() instead of io.to() here?
+  //   The sender receives their message via the ack — not via the broadcast.
+  //   If we used io.to() the sender would get a DUPLICATE via 'new_message'.
+  socket.on('send_message', async ({ roomId, body }, ack) => {
+    try {
+      const { id: userId, username } = socket.data.user;
+
+      // saveMessage validates the body (non-empty, max 1000 chars) and persists.
+      // Using the service here ensures the same validation rules apply whether
+      // the message comes from a socket event or any future REST endpoint.
+      const saved = await messagesService.saveMessage({
+        roomId,
+        senderId: userId,
+        body,
+      });
+
+      // Attach username — INSERT RETURNING doesn't JOIN users, so we add it
+      // from the already-known socket identity (no extra DB query needed).
+      const message = { ...saved, sender_username: username };
+
+      // Broadcast to everyone in the room EXCEPT the sending socket.
+      // Other users receive the message via their 'new_message' listener
+      // (wired in useMessages on the client).
+      socket.to(roomId).emit('new_message', message);
+
+      // Return the saved message to the sender via the ack callback.
+      // The client uses this to replace the optimistic (temp-id) message
+      // with the real message (DB id + server timestamp).
+      if (typeof ack === 'function') ack({ ok: true, message });
+
+    } catch (err) {
+      console.error('send_message error:', err);
+      // ok: false lets the client remove the optimistic message and show an error.
+      if (typeof ack === 'function') {
+        ack({ ok: false, message: err.message ?? 'Could not send message' });
+      }
+      socket.emit('error', { message: 'Could not send message' });
+    }
+  });
+}

@@ -13,11 +13,16 @@
  */
 import * as roomsRepo from '../repositories/rooms.repository.js';
 
-export async function getRooms() {
-  // No business logic needed here yet — just delegate to the repository.
-  // The service layer still exists so that if we later need to add logic
-  // (e.g., filter rooms by user permissions), it goes here, not in the controller.
-  return roomsRepo.findAllPublic();
+/**
+ * getRooms(userId)
+ *
+ * Returns only the rooms the requesting user is currently a member of.
+ * Passing userId down to the repository lets the SQL JOIN filter to
+ * "your rooms" — so leaving a room (removing the row) makes it disappear
+ * from the sidebar automatically on the next refetch.
+ */
+export async function getRooms(userId) {
+  return roomsRepo.findAllForUser(userId);
 }
 
 export async function createRoom({ name, description, isPrivate, ownerId }) {

@@ -1,5 +1,5 @@
 /**
- * ChatPanel — Main Chat Area (US-203)
+ * ChatPanel — Main Chat Area (US-203, US-204)
  *
  * Rendered by the "/" route inside the protected Layout. It is the hub that
  * connects Redux state (which room is active) to the real-time message display.
@@ -20,8 +20,6 @@
  *     └─ returns { messages, isLoading, isError }
  *       ↓
  *   <MessageList messages={messages} ... />
- *       ↓  (maps each message to)
- *   <MessageItem message={msg} isOwn={...} />
  *
  * ─── ROOM NAME IN HEADER ─────────────────────────────────────────────────────
  * useMessages only knows the roomId, not the room's name or description.
@@ -34,6 +32,26 @@
  * this is always fast. If the cache is empty for any reason we fall back to
  * showing "…" in the header.
  *
+ * ─── LEAVE ROOM FLOW (US-204) ────────────────────────────────────────────────
+ *
+ *   1. User clicks "Leave Room" button in the header.
+ *   2. window.confirm() shows a browser confirmation dialog.
+ *      Using the native browser dialog keeps the code simple and avoids
+ *      building a custom modal for a confirmation. It blocks execution until
+ *      the user clicks OK or Cancel.
+ *   3. On OK: await leaveRoom(activeRoomId)
+ *      leaveRoom (from useRooms) emits the 'leave_room' socket event and waits
+ *      for the server's acknowledgment before:
+ *        a) Dispatching setActiveRoom(null) → ChatPanel shows the empty state
+ *        b) Invalidating the ['rooms'] cache → sidebar refetches (room gone)
+ *   4. isLeaving state prevents double-clicks and gives the user visual feedback.
+ *
+ * ─── EMPTY STATE ─────────────────────────────────────────────────────────────
+ * If no room is selected (activeRoomId === null), we short-circuit and render
+ * a friendly prompt. This means useMessages is called with null — which is
+ * safe because it has the guard `enabled: !!roomId` that prevents any fetch
+ * or socket emission when roomId is null.
+ *
  * ─── LAYOUT (flex column) ────────────────────────────────────────────────────
  * Layout gives ChatPanel 100% of the remaining width and height via
  * <main style={{ flex: 1, overflow: 'auto' }}>.
@@ -41,40 +59,45 @@
  * Internally we use a flex column so MessageList can grow to fill the space:
  *
  *   ┌─────────────────────────────────────────┐  ← ChatPanel (height: 100%)
- *   │  header  (room name + description)      │  flexShrink: 0
+ *   │  header  (room name + Leave button)     │  flexShrink: 0
  *   ├─────────────────────────────────────────┤
  *   │                                         │
  *   │  MessageList  (scrollable)              │  flex: 1  ← grows to fill
  *   │                                         │
  *   └─────────────────────────────────────────┘
  *
- *   MessageInput  ← will be added in US-301
- *   TypingIndicator  ← will be added in US-303
- *
- * ─── EMPTY STATE ─────────────────────────────────────────────────────────────
- * If no room is selected (activeRoomId === null), we short-circuit and render
- * a friendly prompt. This means useMessages is called with null — which is
- * safe because it has the guard `enabled: !!roomId` that prevents any fetch
- * or socket emission when roomId is null.
+ *   MessageInput    ← will be added in US-301
+ *   TypingIndicator ← will be added in US-303
  */
+import { useState }       from 'react';
 import { useSelector }    from 'react-redux';
 import { useQueryClient } from '@tanstack/react-query';
 import { selectActiveRoomId }  from '../../rooms/roomsSlice';
+import { useRooms }            from '../../rooms/hooks/useRooms';
 import { useMessages }         from '../hooks/useMessages';
 import MessageList             from './MessageList';
+import MessageInput            from './MessageInput';
 
 export default function ChatPanel() {
   // Read which room the user clicked in the sidebar.
   // selectActiveRoomId is a selector defined in roomsSlice:
   //   export const selectActiveRoomId = state => state.rooms.activeRoomId;
-  // Using a named selector means if we ever rename the Redux key, we only
-  // update roomsSlice.js — not every component that uses it.
   const activeRoomId = useSelector(selectActiveRoomId);
+
+  // leaveRoom is the function that emits the socket event and waits for the
+  // server acknowledgment before updating local state.
+  // We import it from useRooms (which also owns createRoom and the rooms list)
+  // so all room mutations live in one hook.
+  const { leaveRoom } = useRooms();
+
+  // isLeaving tracks whether a leave request is in flight.
+  // This prevents the user from clicking "Leave Room" multiple times while
+  // waiting for the server acknowledgment, which would send duplicate events.
+  const [isLeaving, setIsLeaving] = useState(false);
 
   // Look up the room's metadata from the React Query cache so we can display
   // the room name in the header without a separate network request.
-  // The rooms list was already fetched by RoomList (useRooms hook) and stored
-  // under the key ['rooms']. getQueryData() reads it synchronously.
+  // getQueryData() is a synchronous read — no network request is made.
   const queryClient = useQueryClient();
   const rooms       = queryClient.getQueryData(['rooms']) ?? [];
   const activeRoom  = rooms.find(r => r.id === activeRoomId);
@@ -85,9 +108,41 @@ export default function ChatPanel() {
   // selected.
   const { messages, isLoading, isError } = useMessages(activeRoomId);
 
+  // ── Leave handler ─────────────────────────────────────────────────────────
+  async function handleLeaveRoom() {
+    // window.confirm() opens a native browser dialog and returns:
+    //   true  — the user clicked "OK" (confirm)
+    //   false — the user clicked "Cancel" or closed the dialog
+    // This is the simplest way to get confirmation without a custom modal.
+    const confirmed = window.confirm(
+      `Leave #${activeRoom?.name ?? 'this room'}? You can rejoin later.`
+    );
+    if (!confirmed) return; // user cancelled — do nothing
+
+    setIsLeaving(true);
+    try {
+      // await leaveRoom so we know when the server acknowledgment arrives.
+      // leaveRoom internally:
+      //   1. Emits 'leave_room' socket event
+      //   2. Waits for ack({ ok: true }) from the server
+      //   3. Dispatches setActiveRoom(null) → causes the empty state to show
+      //   4. Invalidates ['rooms'] cache → sidebar refetches without this room
+      await leaveRoom(activeRoomId);
+      // No need to setIsLeaving(false) here — the component unmounts this
+      // panel's room view once activeRoomId becomes null, so the state reset
+      // is irrelevant. But we add it in case of errors (the catch below).
+    } catch (err) {
+      console.error('Leave room failed:', err);
+      // Show a simple alert if the leave fails.
+      // A future improvement would show an inline error banner instead.
+      alert('Could not leave the room. Please try again.');
+      setIsLeaving(false);
+    }
+  }
+
   // ── Empty state: no room selected ────────────────────────────────────────
-  // Show this AFTER all hooks have been called (React rule: hooks before
-  // any early return).
+  // Show this AFTER all hooks have been called (React rule: hooks must be
+  // called before any early return — you cannot call hooks conditionally).
   if (!activeRoomId) {
     return (
       <div style={styles.empty}>
@@ -102,19 +157,41 @@ export default function ChatPanel() {
 
       {/* ── Header ── */}
       <header style={styles.header}>
-        {/*
-         * activeRoom?.name — optional chaining handles the brief moment where
-         * the room list cache might be empty (e.g., hard refresh with a URL
-         * that has no sidebar data yet). Falls back to "…" as a placeholder.
-         */}
-        <span style={styles.roomName}>
-          # {activeRoom?.name ?? '…'}
-        </span>
 
-        {/* Description is optional — only render the element if it exists */}
-        {activeRoom?.description && (
-          <span style={styles.description}>{activeRoom.description}</span>
-        )}
+        {/* Room name and optional description */}
+        <div style={styles.headerLeft}>
+          {/*
+           * activeRoom?.name — optional chaining handles the brief moment where
+           * the room list cache might be empty (e.g., hard refresh).
+           * Falls back to "…" as a placeholder.
+           */}
+          <span style={styles.roomName}>
+            # {activeRoom?.name ?? '…'}
+          </span>
+          {activeRoom?.description && (
+            <span style={styles.description}>{activeRoom.description}</span>
+          )}
+        </div>
+
+        {/*
+         * Leave Room button (US-204 AC: "A Leave Room option is accessible
+         * while inside a room").
+         *
+         * disabled={isLeaving} prevents double-clicks while the socket event
+         * is in flight. The button label changes to give visual feedback.
+         *
+         * style={{ opacity }} visually dims the button while in flight so the
+         * user knows something is happening.
+         */}
+        <button
+          onClick={handleLeaveRoom}
+          disabled={isLeaving}
+          style={{ ...styles.leaveButton, opacity: isLeaving ? 0.6 : 1 }}
+          title="Leave this room"
+        >
+          {isLeaving ? 'Leaving…' : 'Leave Room'}
+        </button>
+
       </header>
 
       {/*
@@ -128,8 +205,16 @@ export default function ChatPanel() {
         isError={isError}
       />
 
-      {/* US-301: <MessageInput roomId={activeRoomId} /> */}
       {/* US-303: <TypingIndicator roomId={activeRoomId} /> */}
+
+      {/*
+       * MessageInput lives at the bottom of the flex column.
+       * It has flexShrink: 0 so it never gets compressed by the message list.
+       * The onKeyDown prop (for the US-303 typing indicator) will be wired up
+       * when useTyping() is implemented — omitting it here is safe because
+       * MessageInput treats it as optional.
+       */}
+      <MessageInput roomId={activeRoomId} />
 
     </div>
   );
@@ -148,24 +233,54 @@ const styles = {
 
   // Header bar — fixed height, does not shrink when the list grows
   header: {
-    display:       'flex',
-    alignItems:    'baseline',
-    gap:           '0.75rem',
-    padding:       '0.75rem 1.25rem',
-    borderBottom:  '1px solid #e5e7eb',
-    flexShrink:    0,          // prevent this from being squeezed by MessageList
-    background:    '#ffffff',
+    display:        'flex',
+    alignItems:     'center',
+    justifyContent: 'space-between',  // push Leave button to the far right
+    gap:            '0.75rem',
+    padding:        '0.75rem 1.25rem',
+    borderBottom:   '1px solid #e5e7eb',
+    flexShrink:     0,  // prevent this from being squeezed by MessageList
+    background:     '#ffffff',
+  },
+
+  // Left side of header: room name + description stacked
+  headerLeft: {
+    display:    'flex',
+    alignItems: 'baseline',
+    gap:        '0.75rem',
+    minWidth:   0,  // allow text to truncate instead of overflowing
   },
 
   roomName: {
-    fontWeight: 700,
-    fontSize:   '1rem',
-    color:      '#111827',
+    fontWeight:   700,
+    fontSize:     '1rem',
+    color:        '#111827',
+    whiteSpace:   'nowrap',
+    overflow:     'hidden',
+    textOverflow: 'ellipsis',
   },
 
   description: {
-    fontSize: '0.85rem',
-    color:    '#6b7280',
+    fontSize:     '0.85rem',
+    color:        '#6b7280',
+    whiteSpace:   'nowrap',
+    overflow:     'hidden',
+    textOverflow: 'ellipsis',
+  },
+
+  // Leave Room button — subtle destructive styling (red text, no fill)
+  // A fill would be too alarming for a common action. The red text signals
+  // "this is a destructive action" without dominating the header visually.
+  leaveButton: {
+    padding:      '0.3rem 0.75rem',
+    background:   'transparent',
+    color:        '#ef4444',        // Tailwind red-500
+    border:       '1px solid #ef4444',
+    borderRadius: '4px',
+    fontSize:     '0.8rem',
+    cursor:       'pointer',
+    flexShrink:   0,  // never shrink below its natural size
+    transition:   'opacity 0.15s',
   },
 
   // Shown when no room is selected

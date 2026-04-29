@@ -12,29 +12,47 @@
  *     GROUP BY r.id;
  *
  * A VIEW is a saved query that you can SELECT from just like a table. Using it
- * here means:
- *   1. We get member_count and last_message_at "for free" — no extra JOIN code.
- *   2. If the view's definition ever changes (e.g., more columns added), this
- *      file automatically benefits without being rewritten.
+ * here means we get member_count and last_message_at automatically — no extra
+ * JOIN code needed in this file.
+ *
+ * ─── WHY FILTER ROOMS BY MEMBERSHIP (US-204) ─────────────────────────────────
+ * findAllForUser() returns only rooms where the requesting user is a member,
+ * rather than every public room. This satisfies:
+ *
+ *   US-204 AC: "The room is removed from the user's sidebar list after leaving"
+ *     When the user leaves (DELETE from room_members), the next call to
+ *     findAllForUser() will no longer include that room.
+ *
+ * The JOIN on room_members filters to "rooms I belong to." If the user has no
+ * memberships, the query returns an empty array — the sidebar shows "No rooms
+ * yet — create one!" which is the US-201 empty-state AC.
  *
  * ─── LEFT JOIN vs INNER JOIN ─────────────────────────────────────────────────
- * The view uses LEFT JOINs, which means a room with zero members or zero
- * messages still appears in the result (with NULL for the aggregated columns).
- * An INNER JOIN would silently drop empty rooms — usually not what you want
- * when listing "all rooms".
+ * The room_summary VIEW uses LEFT JOINs internally so rooms with zero members
+ * or messages still appear in the view. Our findAllForUser query then applies
+ * an INNER JOIN on room_members to filter to only the user's rooms — if there
+ * is no matching room_members row the room is excluded.
  */
 import { pool } from '../db/pool.js';
 
-export async function findAllPublic() {
-  // Query the view and filter to public rooms only.
-  // ORDER BY: rooms with recent activity bubble up; rooms with no messages go last.
-  const { rows } = await pool.query(`
-    SELECT id, name, description, is_private, owner_id,
-           created_at, member_count, last_message_at
-    FROM   room_summary
-    WHERE  is_private = false
-    ORDER  BY last_message_at DESC NULLS LAST, created_at DESC
-  `);
+/**
+ * Returns all public rooms the given user is currently a member of.
+ * Ordered by most recent activity first so the most active rooms bubble up.
+ */
+export async function findAllForUser(userId) {
+  // JOIN with room_members filters the result to rooms where this user has a
+  // membership row. Once they leave (row deleted), the room disappears from
+  // this query's results.
+  const { rows } = await pool.query(
+    `SELECT rs.id, rs.name, rs.description, rs.is_private, rs.owner_id,
+            rs.created_at, rs.member_count, rs.last_message_at
+     FROM   room_summary rs
+     JOIN   room_members rm ON rm.room_id = rs.id
+     WHERE  rs.is_private = false
+       AND  rm.user_id = $1
+     ORDER  BY rs.last_message_at DESC NULLS LAST, rs.created_at DESC`,
+    [userId]
+  );
   return rows;
 }
 
@@ -68,15 +86,30 @@ export async function createRoom({ name, description, isPrivate, ownerId }) {
   return rows[0];
 }
 
+/**
+ * Adds a user to a room. Returns true if a new row was inserted, false if the
+ * user was already a member (the ON CONFLICT clause prevented a duplicate).
+ *
+ * ─── RETURNING id ────────────────────────────────────────────────────────────
+ * Adding RETURNING id to this INSERT means:
+ *   • If the row is inserted (new member): rows = [{ id: '...' }], length = 1
+ *   • If ON CONFLICT DO NOTHING fires (already a member): rows = [], length = 0
+ *
+ * This gives us a way to distinguish "first ever join" from "re-opening the
+ * room" without a separate SELECT. The chat handler uses this to decide whether
+ * to broadcast a "has joined the room" system message.
+ */
 export async function addMember(roomId, userId) {
-  // ON CONFLICT DO NOTHING makes this idempotent — calling it twice (e.g., if
-  // the user clicks "join" again) is a safe no-op instead of an error.
-  await pool.query(
+  const { rows } = await pool.query(
     `INSERT INTO room_members (room_id, user_id)
      VALUES ($1, $2)
-     ON CONFLICT (room_id, user_id) DO NOTHING`,
+     ON CONFLICT (room_id, user_id) DO NOTHING
+     RETURNING id`,
     [roomId, userId]
   );
+  // rows.length === 1 → new row inserted → this is a new member
+  // rows.length === 0 → conflict was skipped → user was already a member
+  return rows.length > 0;
 }
 
 export async function removeMember(roomId, userId) {
