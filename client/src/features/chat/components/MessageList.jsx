@@ -1,145 +1,306 @@
 /**
- * MessageList — Scrollable Message Feed (US-203)
+ * MessageList — Scrollable Message Feed (US-203, US-302)
  *
- * Receives the full array of messages for the active room and renders each
- * one as a <MessageItem />. Handles auto-scrolling, loading, and error states.
+ * Renders every message for the active room and handles three scrolling
+ * behaviours that together satisfy the US-302 acceptance criteria:
+ *
+ *   AC4 — Auto-scroll when a new message arrives (while at the bottom)
+ *   AC5 — Don't force-scroll when the user has scrolled up; show a button
  *
  * Props:
  *   messages  — array of message objects from useMessages / React Query cache
  *   isLoading — bool: true while the initial REST fetch is in flight
  *   isError   — bool: true if the REST fetch failed
+ *   roomId    — the active room's UUID; used to reset scroll state on room switch
  *
- * ─── AUTO-SCROLL TO BOTTOM ───────────────────────────────────────────────────
- * Every time a new message arrives (or the initial history loads), we want to
- * scroll the list so the newest message is visible. The technique:
+ * ─── SMART SCROLL DESIGN ─────────────────────────────────────────────────────
+ * The core challenge: how do we know whether the user is at the bottom?
  *
- *   Step 1 — Place a hidden <div ref={bottomRef} /> at the END of the list.
- *             This div has no visual appearance; it's just a DOM anchor.
+ * We listen to the container's 'scroll' event and compute:
  *
- *   Step 2 — In a useEffect that depends on [messages], call:
- *               bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
- *             scrollIntoView() is a built-in browser DOM method. It walks up
- *             the DOM tree to find the nearest scrollable ancestor and scrolls
- *             it until the target element is visible. { behavior: 'smooth' }
- *             animates the scroll instead of jumping.
+ *   distanceFromBottom = scrollHeight - scrollTop - clientHeight
  *
- *   Step 3 — When the component re-renders because messages changed (new
- *             message appended by useMessages), the effect fires again and
- *             scrolls to the sentinel div — i.e., to the bottom.
+ *   scrollHeight  — total height of all content, including overflow (off-screen)
+ *   scrollTop     — how many pixels the user has scrolled down from the top
+ *   clientHeight  — the visible height of the element (the "viewport" of the list)
  *
- * ─── useRef ──────────────────────────────────────────────────────────────────
- * useRef() returns an object with a single property: { current: null }.
- * When you attach it to a JSX element with ref={bottomRef}, React sets
- * bottomRef.current = <the actual DOM node> after the element mounts.
+ *   When distanceFromBottom ≈ 0, the user sees the bottom of the list.
+ *   When it's large, they've scrolled up to read older messages.
  *
- * Crucially, CHANGING .current does NOT cause a re-render — that's what
- * makes refs the right tool for DOM access vs useState.
+ * We treat "within 80px of the bottom" as "at bottom" so tiny accidental
+ * scrolls don't trigger the notification button.
  *
- * ─── MESSAGE GROUPING ────────────────────────────────────────────────────────
- * To reduce visual noise (like Discord / Slack do), we detect consecutive
- * messages from the same sender and mark them "grouped." We compare:
- *   messages[i].sender_id === messages[i - 1].sender_id
+ * ─── WHY A REF FOR isAtBottom, NOT STATE ─────────────────────────────────────
+ * The scroll event can fire dozens of times per second. If we called setState
+ * on every scroll event, React would re-render the entire component list on
+ * every pixel of scroll — expensive and unnecessary.
  *
- * A grouped message can suppress the username label in MessageItem.
- * System messages are never grouped with regular messages.
+ * Instead we store the position in a ref:
+ *   isAtBottomRef.current = true/false
  *
- * ─── isOwn ───────────────────────────────────────────────────────────────────
- * MessageItem needs to know which messages to right-align. We read the
- * current user's ID from Redux here and pass `isOwn` as a prop so MessageItem
- * can remain a simple presentational component with no Redux dependency.
+ * Refs are mutable objects that React doesn't watch. Changing .current never
+ * triggers a re-render. We only use state (showNewButton) for the ONE thing
+ * that actually needs to change what's rendered.
  *
- * Note: after a page refresh, state.auth.user is null (the token is restored
- * from localStorage but the user object is not). In that case currentUserId
- * is undefined and isOwn is always false — own messages will appear on the
- * left until the user logs out and back in. This is an acceptable trade-off
- * for this milestone; a future improvement would decode the JWT payload on
- * the client to extract the user ID without a server round-trip.
+ * ─── THREE EFFECTS ────────────────────────────────────────────────────────────
+ *
+ *   Effect 1 — Scroll listener (runs once on mount):
+ *     Attaches to the scrollable div and keeps isAtBottomRef up-to-date.
+ *     Returns a cleanup that removes the listener on unmount.
+ *
+ *   Effect 2 — Room switch reset (runs when roomId changes):
+ *     When the user clicks a different room, we reset isAtBottomRef to true
+ *     and jump instantly to the bottom of the new room's history.
+ *     Without this, the scroll position from the previous room would carry
+ *     over and the "New message" button might appear incorrectly.
+ *
+ *   Effect 3 — New message handler (runs when messages array changes):
+ *     If at bottom → smoothly scroll to show the new message.
+ *     If scrolled up → set showNewButton=true so the user knows new content
+ *     arrived without disrupting their place in the history.
+ *
+ * ─── CSS LAYOUT STRUCTURE ────────────────────────────────────────────────────
+ *
+ *   <div style={{ flex:1, position:'relative', overflow:'hidden' }}>   ← outer
+ *     <div ref={listRef} style={{ overflowY:'auto', height:'100%' }}>  ← scroller
+ *       messages …
+ *       <div ref={bottomRef} />                                        ← sentinel
+ *     </div>
+ *     {showNewButton && <button style={{ position:'absolute' }}>…}     ← float
+ *   </div>
+ *
+ * outer      flex:1 to grow in the ChatPanel flex column.
+ *            position:relative so the absolutely-positioned button is contained.
+ *            overflow:hidden to clip any overflow from children.
+ *
+ * scroller   height:100% fills outer. overflowY:auto provides the scrollbar.
+ *            minHeight:0 is inherited from outer which has minHeight:0 (via flex).
+ *
+ * The button is pinned to the bottom-center of the outer div with
+ * position:absolute, bottom, left:50%, transform:translateX(-50%).
  */
-import { useRef, useEffect } from 'react';
-import { useSelector }       from 'react-redux';
-import MessageItem           from './MessageItem';
+import { useRef, useEffect, useState } from 'react';
+import { useSelector }                 from 'react-redux';
+import MessageItem                     from './MessageItem';
 
-export default function MessageList({ messages, isLoading, isError }) {
-  // Read the logged-in user's ID so we can flag own messages for right-alignment.
-  // The optional-chaining (?.) safely returns undefined when user is null.
+// How close to the bottom (in pixels) we consider "at bottom."
+// 80 px gives a comfortable threshold so tiny accidental scrolls don't
+// trigger the "New message" button.
+const BOTTOM_THRESHOLD = 80;
+
+export default function MessageList({ messages, isLoading, isError, roomId }) {
+  // Read the current user's ID to determine which messages to right-align.
   const currentUserId = useSelector(state => state.auth.user?.id);
 
-  // bottomRef.current will hold the DOM node of the sentinel <div> at the
-  // bottom of the list. React sets it automatically when the div mounts.
-  const bottomRef = useRef(null);
+  // ── Refs ─────────────────────────────────────────────────────────────────────
+  // listRef   → the scrollable container div
+  // bottomRef → the invisible sentinel at the end of the list
+  // isAtBottomRef → tracks scroll position WITHOUT triggering re-renders
+  const listRef       = useRef(null);
+  const bottomRef     = useRef(null);
+  const isAtBottomRef = useRef(true); // start true so initial load scrolls to bottom
 
-  // ── Effect: scroll to the bottom whenever messages changes ────────────────
-  // [messages] in the dependency array means this effect re-runs every time
-  // the messages array reference changes — which happens when:
-  //   a) The initial history loads (React Query resolves the fetch)
-  //   b) A new 'new_message' socket event appends to the cache
-  //
-  // The ?. optional chaining handles the first render where the ref might
-  // not yet be attached (though in practice it always is by the time data loads).
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  // ── State ─────────────────────────────────────────────────────────────────────
+  // showNewButton is the ONLY piece of scroll state that affects rendering.
+  // It becomes true when new messages arrive while the user is scrolled up.
+  const [showNewButton, setShowNewButton] = useState(false);
 
-  // ── Loading state ──────────────────────────────────────────────────────────
-  // isLoading is true on the very first fetch for a room (before any data is
-  // cached). After that, React Query returns the stale data immediately while
-  // refetching in the background, so this spinner rarely shows.
-  if (isLoading) {
-    return <div style={styles.center}>Loading messages…</div>;
+  // ── Helper: scroll to the bottom sentinel ───────────────────────────────────
+  // `behavior` is either 'smooth' (animated) or 'instant' (jump).
+  // We use 'smooth' for new-message scrolls and 'instant' for room switches
+  // so switching rooms feels like a page navigation, not a scroll animation.
+  function scrollToBottom(behavior = 'smooth') {
+    bottomRef.current?.scrollIntoView({ behavior });
   }
 
-  // ── Error state ────────────────────────────────────────────────────────────
+  // ── Effect 1: scroll listener ────────────────────────────────────────────────
+  // Runs once on mount. Keeps isAtBottomRef.current in sync with the actual
+  // scroll position of the container without causing re-renders.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+
+    function handleScroll() {
+      // How far the bottom of the content is from the visible bottom edge.
+      // Formula breakdown:
+      //   scrollHeight  = total height of all content (including overflow)
+      //   scrollTop     = pixels scrolled from the top (0 when at top)
+      //   clientHeight  = visible height of the container (constant unless resized)
+      //
+      // When scrollHeight === scrollTop + clientHeight, the user is exactly at
+      // the bottom. distanceFromBottom would be 0.
+      const distanceFromBottom =
+        list.scrollHeight - list.scrollTop - list.clientHeight;
+
+      isAtBottomRef.current = distanceFromBottom < BOTTOM_THRESHOLD;
+
+      // If the user scrolled back down to the bottom, hide the button.
+      if (isAtBottomRef.current) {
+        setShowNewButton(false);
+      }
+    }
+
+    // `passive: true` tells the browser this handler never calls preventDefault().
+    // The browser can then begin scrolling immediately without waiting for the
+    // handler to finish — a meaningful performance improvement on mobile.
+    list.addEventListener('scroll', handleScroll, { passive: true });
+
+    // Cleanup: remove the listener when MessageList unmounts.
+    // Without this, the handler would reference a DOM node that no longer exists.
+    return () => list.removeEventListener('scroll', handleScroll);
+  }, []); // empty array → runs once when the component mounts
+
+  // ── Effect 2: reset scroll state when the room changes ──────────────────────
+  // When the user clicks a different room in the sidebar, `roomId` changes.
+  // If we didn't reset, `isAtBottomRef` might carry over the previous room's
+  // scroll position (scrolled-up) and the new room would immediately show the
+  // "New message" button even though no new messages have arrived.
+  useEffect(() => {
+    if (!roomId) return;
+
+    // Reset to "at bottom" so Effect 3 will auto-scroll to the new room's
+    // latest message when that room's data loads.
+    isAtBottomRef.current = true;
+    setShowNewButton(false);
+
+    // Jump instantly (no animation) to the bottom.
+    // Using 'instant' here feels like a page navigation rather than a scroll,
+    // which matches the mental model of "switching to a new room."
+    scrollToBottom('instant');
+  }, [roomId]); // re-runs every time the user selects a different room
+
+  // ── Effect 3: smart auto-scroll when messages change ────────────────────────
+  // Fires whenever the messages array changes — i.e., when:
+  //   a) The initial history loads (React Query resolves the fetch)
+  //   b) A new 'new_message' socket event appends to the cache via useMessages
+  //   c) An optimistic message from MessageInput is appended or replaced
+  useEffect(() => {
+    if (messages.length === 0) return; // nothing to scroll to yet
+
+    if (isAtBottomRef.current) {
+      // User is at or near the bottom — safe to auto-scroll.
+      // This is the "happy path" AC4: the panel keeps up with the conversation.
+      scrollToBottom('smooth');
+    } else {
+      // User has scrolled up to read older messages.
+      // Auto-scrolling here would yank them away from where they're reading —
+      // a very jarring UX. Instead, show the "New message ↓" button so they
+      // know new content arrived and can choose when to scroll down.
+      // This satisfies AC5.
+      setShowNewButton(true);
+    }
+  }, [messages]);
+
+  // ── Loading state ─────────────────────────────────────────────────────────────
+  if (isLoading) {
+    return <div style={styles.centeredOuter}><span style={styles.centerText}>Loading messages…</span></div>;
+  }
+
+  // ── Error state ───────────────────────────────────────────────────────────────
   if (isError) {
     return (
-      <div style={styles.center}>Could not load messages. Try again.</div>
+      <div style={styles.centeredOuter}>
+        <span style={styles.centerText}>Could not load messages. Try again.</span>
+      </div>
     );
   }
 
-  // ── Empty state (room exists but no messages yet) ──────────────────────────
+  // ── Empty state (room exists but no messages yet) ─────────────────────────────
   if (messages.length === 0) {
     return (
-      <div style={styles.center}>No messages yet — say hello!</div>
+      <div style={styles.centeredOuter}>
+        <span style={styles.centerText}>No messages yet — say hello!</span>
+      </div>
     );
   }
 
   return (
-    // This div must be scrollable and fill all available vertical space.
+    // ── Outer wrapper ──────────────────────────────────────────────────────────
+    // position: 'relative' is required so the absolutely-positioned "New message"
+    // button is contained within THIS div rather than the whole page.
     //
-    // flex: 1  — grow to fill the space between the header and the input box
-    //            (ChatPanel is a flex column; this is the flex child that grows).
-    // overflowY: 'auto'  — show a scrollbar only when content exceeds the height.
-    // flexDirection: 'column' + display: 'flex' — stack messages top-to-bottom.
-    <div style={styles.list}>
+    // flex: 1 makes this grow to fill the space between the header and the
+    // input box (ChatPanel is a flex column and this is the flex child that grows).
+    //
+    // overflow: 'hidden' clips the inner scrollable div to this boundary.
+    // Without it, the inner div's scrollbar could extend outside the panel.
+    //
+    // minHeight: 0 is a flex-specific rule. By default a flex item's minimum
+    // height is its content size, which prevents it from shrinking. Setting
+    // minHeight: 0 allows the item to shrink below its content and lets the
+    // inner div control the overflow properly.
+    <div style={styles.outer}>
 
-      {messages.map((message, index) => {
-        // ── Grouping logic ───────────────────────────────────────────────────
-        // The first message (index 0) has no predecessor, so it's never grouped.
-        // System messages break a group — a normal message after a system message
-        // is NOT considered grouped even if it's from the same sender.
-        const prevMessage = index > 0 ? messages[index - 1] : null;
-        const isGrouped   =
-          !!prevMessage &&
-          prevMessage.sender_id  === message.sender_id &&
-          !prevMessage.is_system_message &&
-          !message.is_system_message;
+      {/* ── Scrollable inner container ── */}
+      {/*
+       * ref={listRef} so Effect 1 can attach the scroll listener.
+       * height: '100%' fills the outer div.
+       * overflowY: 'auto' provides a scrollbar only when content overflows.
+       */}
+      <div ref={listRef} style={styles.list}>
 
-        return (
-          <MessageItem
-            key={message.id}           // key must be stable & unique — DB id is ideal
-            message={message}
-            isOwn={message.sender_id === currentUserId}
-            isGrouped={isGrouped}
-          />
-        );
-      })}
+        {messages.map((message, index) => {
+          // ── Grouping logic ─────────────────────────────────────────────────
+          // Consecutive messages from the same sender are "grouped."
+          // MessageItem uses this to hide the username on grouped messages,
+          // matching the Slack/Discord visual style.
+          // System messages always break a group.
+          const prevMessage = index > 0 ? messages[index - 1] : null;
+          const isGrouped   =
+            !!prevMessage &&
+            prevMessage.sender_id      === message.sender_id &&
+            !prevMessage.is_system_message &&
+            !message.is_system_message;
+
+          return (
+            <MessageItem
+              key={message.id}    // stable, unique key — DB UUID (or temp-* for optimistic)
+              message={message}
+              isOwn={message.sender_id === currentUserId}
+              isGrouped={isGrouped}
+            />
+          );
+        })}
+
+        {/*
+         * Sentinel div — zero size, invisible. Only purpose: be the target of
+         * scrollIntoView() in scrollToBottom(). Placing it after the last
+         * message ensures scrolling to it shows the newest message fully.
+         */}
+        <div ref={bottomRef} />
+
+      </div>
 
       {/*
-       * Sentinel div — zero height, zero width, invisible.
-       * Its only purpose is to be the scrollIntoView() target above.
-       * Placing it AFTER the last message means scrolling to it puts the
-       * newest message fully in view.
+       * ── "New message ↓" button ────────────────────────────────────────────
+       *
+       * Shown only when showNewButton is true (new message arrived while the
+       * user was scrolled up). The button floats over the bottom of the message
+       * list via position:absolute.
+       *
+       * Why absolute positioning?
+       *   The button sits OUTSIDE the scrollable div (listRef) so it doesn't
+       *   scroll with the content — it stays pinned to the bottom of the outer
+       *   div regardless of how far up the user has scrolled.
+       *
+       * Clicking it:
+       *   1. Resets isAtBottomRef to true (so the next new message auto-scrolls)
+       *   2. Hides the button
+       *   3. Smoothly scrolls to the bottom sentinel
        */}
-      <div ref={bottomRef} />
+      {showNewButton && (
+        <button
+          onClick={() => {
+            isAtBottomRef.current = true;
+            setShowNewButton(false);
+            scrollToBottom('smooth');
+          }}
+          style={styles.newMessageButton}
+          aria-label="Scroll to new message"
+        >
+          New message ↓
+        </button>
+      )}
 
     </div>
   );
@@ -147,20 +308,65 @@ export default function MessageList({ messages, isLoading, isError }) {
 
 // ─── Style objects ────────────────────────────────────────────────────────────
 const styles = {
+  // Outer wrapper — grows in the ChatPanel flex column; contains the button
+  outer: {
+    flex:      1,
+    position:  'relative', // required for absolute-positioned button
+    overflow:  'hidden',
+    minHeight: 0,          // allow flex shrinking (prevents content overflow)
+  },
+
+  // The actual scrollable list — fills the outer div
   list: {
-    flex:          1,           // grow to fill remaining height in ChatPanel
-    overflowY:     'auto',      // scrollable
+    height:        '100%',
+    overflowY:     'auto',
     display:       'flex',
     flexDirection: 'column',
     gap:           '0.1rem',
     padding:       '0.75rem 0',
   },
-  center: {
+
+  // Reusable centered layout for loading / error / empty states.
+  // These states also need flex:1 so ChatPanel's layout doesn't collapse.
+  centeredOuter: {
     flex:           1,
     display:        'flex',
     alignItems:     'center',
     justifyContent: 'center',
-    color:          '#9ca3af',
-    fontSize:       '0.9rem',
+    minHeight:      0,
+  },
+
+  centerText: {
+    color:    '#9ca3af',
+    fontSize: '0.9rem',
+  },
+
+  // Floating "New message ↓" button
+  //
+  // position: 'absolute' pins it relative to the outer wrapper.
+  // left: '50%' + transform: 'translateX(-50%)' centers it horizontally.
+  // This is a common pattern for centering absolutely-positioned elements:
+  //   left:50% moves the LEFT EDGE of the button to the center of the parent.
+  //   translateX(-50%) then shifts the button LEFT by half its own width,
+  //   centering it perfectly regardless of how wide the button is.
+  newMessageButton: {
+    position:     'absolute',
+    bottom:       '1rem',
+    left:         '50%',
+    transform:    'translateX(-50%)',
+    background:   '#3b82f6',       // blue-500
+    color:        '#ffffff',
+    border:       'none',
+    borderRadius: '999px',         // pill shape
+    padding:      '0.4rem 1.1rem',
+    fontSize:     '0.8rem',
+    fontWeight:   600,
+    cursor:       'pointer',
+    boxShadow:    '0 2px 8px rgba(0, 0, 0, 0.20)',
+    // zIndex ensures the button sits above the scrollable content
+    zIndex:       10,
+    // Smooth appearance — fade in when React adds it to the DOM
+    animation:    'fadeIn 0.15s ease',
+    whiteSpace:   'nowrap',
   },
 };

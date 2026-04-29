@@ -199,10 +199,16 @@ export default function ChatPanel() {
        * It owns scrolling, loading, and error display internally.
        * ChatPanel just passes the data through — separation of concerns.
        */}
+      {/*
+       * roomId is passed so MessageList can reset its scroll position
+       * when the user switches to a different room (US-302 AC5).
+       * Without it, the scroll state from the previous room would carry over.
+       */}
       <MessageList
         messages={messages}
         isLoading={isLoading}
         isError={isError}
+        roomId={activeRoomId}
       />
 
       {/* US-303: <TypingIndicator roomId={activeRoomId} /> */}
