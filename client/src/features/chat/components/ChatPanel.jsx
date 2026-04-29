@@ -108,7 +108,20 @@ export default function ChatPanel() {
   // (no early returns BEFORE hook calls). The hook itself guards against a
   // null roomId with `enabled: !!roomId`, so nothing happens when no room is
   // selected.
-  const { messages, isLoading, isError } = useMessages(activeRoomId);
+  //
+  // US-502 additions:
+  //   fetchNextPage      — tells React Query to fetch the next older batch of 50
+  //   hasNextPage        — false when the beginning of history has been reached
+  //   isFetchingNextPage — true while that older-batch request is in flight
+  // These are passed directly to MessageList, which owns the "Load older" button.
+  const {
+    messages,
+    isLoading,
+    isError,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useMessages(activeRoomId);
 
   // useTyping manages the debounced typing_start / typing_stop socket events
   // and listens for typing_update from other users (via Redux dispatch).
@@ -222,11 +235,22 @@ export default function ChatPanel() {
        * when the user switches to a different room (US-302 AC5).
        * Without it, the scroll state from the previous room would carry over.
        */}
+      {/*
+       * US-502: three extra props enable the "Load older messages" button.
+       *   fetchNextPage      — MessageList calls this when the button is clicked
+       *   hasNextPage        — MessageList hides the button and shows "Beginning
+       *                        of conversation" when this is false
+       *   isFetchingNextPage — MessageList shows a loading indicator and disables
+       *                        the button while the fetch is in flight
+       */}
       <MessageList
         messages={messages}
         isLoading={isLoading}
         isError={isError}
         roomId={activeRoomId}
+        fetchNextPage={fetchNextPage}
+        hasNextPage={hasNextPage}
+        isFetchingNextPage={isFetchingNextPage}
       />
 
       {/*
