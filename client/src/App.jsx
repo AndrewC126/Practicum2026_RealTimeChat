@@ -38,6 +38,7 @@ import { useSelector } from 'react-redux';
 import LoginForm    from './features/auth/components/LoginForm';
 import RegisterForm from './features/auth/components/RegisterForm';
 import Layout       from './shared/components/Layout';
+import ChatPanel    from './features/chat/components/ChatPanel';
 
 /**
  * RequireAuth — Auth Guard Component
@@ -82,16 +83,10 @@ export default function App() {
         >
           {/*
            * index route: matches exactly "/"
-           * This placeholder will be replaced by <ChatPanel /> once built.
+           * ChatPanel reads the active room from Redux and renders the message
+           * feed. If no room is selected it shows an empty-state prompt.
            */}
-          <Route
-            index
-            element={
-              <div style={{ padding: '2rem' }}>
-                Chat coming soon — you are logged in!
-              </div>
-            }
-          />
+          <Route index element={<ChatPanel />} />
         </Route>
 
         {/* Catch-all: redirect any unknown URL to /login */}
