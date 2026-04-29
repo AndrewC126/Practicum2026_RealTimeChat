@@ -28,6 +28,19 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://localhost:3001',
+
+      // Forward Socket.io traffic to the Express server.
+      //
+      // Socket.io makes requests to /socket.io/... — first an HTTP handshake,
+      // then an upgrade to a WebSocket connection. Without this proxy entry,
+      // those requests hit the Vite dev server (port 5173) and go nowhere.
+      //
+      // ws: true tells Vite to also forward the WebSocket upgrade, not just
+      // the initial HTTP polling requests. Both are needed for Socket.io.
+      '/socket.io': {
+        target: 'http://localhost:3001',
+        ws: true,
+      },
     },
   },
 });
