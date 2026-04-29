@@ -75,7 +75,7 @@ import { useSocket }           from '../../../shared/hooks/useSocket';
 const MAX_LENGTH = 1000;
 const WARN_AT    = 800;  // start showing the counter at this many chars
 
-export default function MessageInput({ roomId, onKeyDown }) {
+export default function MessageInput({ roomId, onKeyDown, onAfterSend }) {
   // draft holds whatever the user has typed so far.
   const [draft,    setDraft]    = useState('');
   // sendError is shown briefly if the server rejects the message.
@@ -109,6 +109,13 @@ export default function MessageInput({ roomId, onKeyDown }) {
     // ── Step 1: Clear the input immediately (feels instant to the user) ────
     setDraft('');
     setSendError('');
+
+    // Immediately emit typing_stop so the "Alice is typing…" indicator clears
+    // for other users the moment the message is sent (US-303 AC).
+    // onAfterSend is the stopTyping function from useTyping, passed in by
+    // ChatPanel via the onAfterSend prop. The ?. means this is a safe no-op
+    // if ChatPanel doesn't provide the prop (e.g., in a test or isolated render).
+    onAfterSend?.();
 
     // ── Step 2: Build and add an optimistic message to the cache ──────────
     // This appears in MessageList RIGHT NOW, before the server responds.

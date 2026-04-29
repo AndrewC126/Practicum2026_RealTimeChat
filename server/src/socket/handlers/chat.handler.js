@@ -30,12 +30,34 @@
  *     Use io.to(roomId) so the person joining/leaving also sees the message
  *     in their own feed. Their message history needs to include it.
  *
- *   User messages (send_message):
- *     Use socket.to(roomId) so the message is NOT sent back to the sender
- *     via the 'new_message' event. Instead, the sender receives their own
- *     message via the ACKNOWLEDGMENT callback (ack). This is the optimistic
- *     update pattern — the sender sees their message immediately on send,
- *     without a full broadcast round-trip.
+ *   User messages (send_message) and typing events (typing_start/stop):
+ *     Use socket.to(roomId) so the event is NOT sent back to the emitting
+ *     socket. For send_message, the sender gets their own message via the ack.
+ *     For typing events, the typer must NEVER see their own indicator —
+ *     AC4 of US-303: "The indicator does not appear to the user who is typing."
+ *
+ * ─── TYPING EVENT FLOW (US-303) ───────────────────────────────────────────────
+ * The server acts as a pure relay for typing events — no state is stored:
+ *
+ *   Client emits 'typing_start' → { roomId }
+ *     Server: socket.to(roomId).emit('typing_update', { username, isTyping: true })
+ *     Others: their useTyping hook receives 'typing_update', dispatches setTyping
+ *             → Redux adds username to typingUsers[roomId]
+ *             → TypingIndicator re-renders with "Alice is typing…"
+ *
+ *   Client emits 'typing_stop' → { roomId }
+ *     Server: socket.to(roomId).emit('typing_update', { username, isTyping: false })
+ *     Others: setTyping removes username from typingUsers[roomId]
+ *             → TypingIndicator re-renders with nothing (or fewer names)
+ *
+ * The client is responsible for debouncing (only emitting typing_start once,
+ * then typing_stop after 3 seconds of silence). The server just forwards.
+ *
+ * Why no server-side typing state?
+ *   Storing who is typing on the server would require cleanup logic for when
+ *   users disconnect without sending typing_stop (browser crash, network drop).
+ *   Keeping it stateless on the server avoids that complexity entirely.
+ *   The client-side debounce handles the "stopped typing" case for normal usage.
  *
  * ─── SOCKET.IO ACKNOWLEDGMENTS ───────────────────────────────────────────────
  * The client can pass a callback as the last argument to socket.emit():
@@ -140,6 +162,31 @@ export function registerChatHandlers(io, socket) {
       if (typeof ack === 'function') ack({ ok: false, message: 'Could not leave room' });
       socket.emit('error', { message: 'Could not leave room' });
     }
+  });
+
+  // ── typing_start ───────────────────────────────────────────────────────────
+  // Emitted by the client when the user begins typing (first keystroke after
+  // being idle). The client is responsible for not emitting this repeatedly —
+  // it uses a ref (isTypingRef) to track whether it has already sent it.
+  //
+  // socket.to(roomId) excludes the sender so the typer never sees their own
+  // indicator — satisfying AC4: "does not appear to the user who is typing."
+  socket.on('typing_start', ({ roomId }) => {
+    const { username } = socket.data.user;
+    socket.to(roomId).emit('typing_update', { username, isTyping: true });
+  });
+
+  // ── typing_stop ────────────────────────────────────────────────────────────
+  // Emitted by the client in two situations:
+  //   1. The user sends a message (immediately clears the indicator)
+  //   2. The user stops typing for 3 seconds (debounce timer fires)
+  //
+  // The server is stateless — it just relays the event. No cleanup is needed
+  // on the server even if the user disconnects while the indicator is shown,
+  // because disconnect events are handled separately (future US-401).
+  socket.on('typing_stop', ({ roomId }) => {
+    const { username } = socket.data.user;
+    socket.to(roomId).emit('typing_update', { username, isTyping: false });
   });
 
   // ── send_message ───────────────────────────────────────────────────────────

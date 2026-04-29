@@ -25,12 +25,15 @@
 import { configureStore } from '@reduxjs/toolkit';
 import authReducer  from '../features/auth/authSlice';
 import roomsReducer from '../features/rooms/roomsSlice';
+import chatReducer  from '../features/chat/chatSlice';
 
 // Redux Toolkit store — ephemeral UI state only (ADR-004)
 export const store = configureStore({
   reducer: {
     auth:  authReducer,
     rooms: roomsReducer,
-    // chat and presence reducers will be added as those features are built
+    // chat holds typing indicators and unread counts (US-303)
+    chat:  chatReducer,
+    // presence reducer will be added in US-401
   },
 });

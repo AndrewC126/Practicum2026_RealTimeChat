@@ -67,7 +67,7 @@
  *   └─────────────────────────────────────────┘
  *
  *   MessageInput    ← will be added in US-301
- *   TypingIndicator ← will be added in US-303
+ *   TypingIndicator ← added in US-303 (renders between MessageList and MessageInput)
  */
 import { useState }       from 'react';
 import { useSelector }    from 'react-redux';
@@ -75,8 +75,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { selectActiveRoomId }  from '../../rooms/roomsSlice';
 import { useRooms }            from '../../rooms/hooks/useRooms';
 import { useMessages }         from '../hooks/useMessages';
+import { useTyping }           from '../hooks/useTyping';
 import MessageList             from './MessageList';
 import MessageInput            from './MessageInput';
+import TypingIndicator         from './TypingIndicator';
 
 export default function ChatPanel() {
   // Read which room the user clicked in the sidebar.
@@ -107,6 +109,22 @@ export default function ChatPanel() {
   // null roomId with `enabled: !!roomId`, so nothing happens when no room is
   // selected.
   const { messages, isLoading, isError } = useMessages(activeRoomId);
+
+  // useTyping manages the debounced typing_start / typing_stop socket events
+  // and listens for typing_update from other users (via Redux dispatch).
+  //
+  // onKeyDown (renamed typingKeyDown to avoid colliding with the prop name):
+  //   Passed to MessageInput's onKeyDown prop. Called on every keystroke to
+  //   emit typing_start (once per session) and reset the 3-second stop timer.
+  //
+  // stopTyping:
+  //   Passed to MessageInput's onAfterSend prop. Called immediately when the
+  //   user clicks the Send button so the indicator clears without waiting for
+  //   the 3-second debounce timer to fire.
+  //
+  // Called unconditionally (hook rule). When activeRoomId is null, useTyping
+  // guards internally with `if (!socket || !roomId) return`.
+  const { onKeyDown: typingKeyDown, stopTyping } = useTyping(activeRoomId);
 
   // ── Leave handler ─────────────────────────────────────────────────────────
   async function handleLeaveRoom() {
@@ -211,16 +229,35 @@ export default function ChatPanel() {
         roomId={activeRoomId}
       />
 
-      {/* US-303: <TypingIndicator roomId={activeRoomId} /> */}
+      {/*
+       * TypingIndicator (US-303) — the "Alice is typing…" bar.
+       *
+       * Sits between the message list and the input box.
+       * Returns null when no one is typing, so it takes zero height in that case —
+       * the layout doesn't shift when it appears or disappears.
+       *
+       * It reads typing state from Redux (populated by useTyping's
+       * 'typing_update' listener above), so it re-renders automatically when
+       * someone starts or stops typing.
+       */}
+      <TypingIndicator roomId={activeRoomId} />
 
       {/*
        * MessageInput lives at the bottom of the flex column.
        * It has flexShrink: 0 so it never gets compressed by the message list.
-       * The onKeyDown prop (for the US-303 typing indicator) will be wired up
-       * when useTyping() is implemented — omitting it here is safe because
-       * MessageInput treats it as optional.
+       *
+       * onKeyDown={typingKeyDown}  — fires on every keystroke to emit typing_start
+       *   and reset the 3-second stop timer (US-303).
+       *
+       * onAfterSend={stopTyping}  — fires when the message is submitted (Enter or
+       *   Send button), immediately stopping the indicator without waiting for the
+       *   3-second debounce timer (US-303 AC: "indicator clears when message sent").
        */}
-      <MessageInput roomId={activeRoomId} />
+      <MessageInput
+        roomId={activeRoomId}
+        onKeyDown={typingKeyDown}
+        onAfterSend={stopTyping}
+      />
 
     </div>
   );
