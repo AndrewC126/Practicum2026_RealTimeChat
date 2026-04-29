@@ -50,15 +50,26 @@ export function getSocket(token) {
   // Only open a NEW connection if one doesn't already exist.
   // This is the core of the singleton pattern.
   if (!socketInstance) {
-    // io('/') — connect to the same origin this page was served from.
-    //   In development, Vite's proxy forwards the WebSocket upgrade to the server.
-    //   In production, both client and server run on the same host/port.
+    // VITE_SERVER_URL is defined in client/.env and injected at build time by Vite.
+    // import.meta.env is Vite's way of exposing environment variables to the
+    // browser — only variables prefixed with VITE_ are exposed (others are kept
+    // server-side for security).
+    //
+    // In development:  VITE_SERVER_URL=http://localhost:3001 (set in client/.env)
+    //   The socket connects directly to the Express server. This is more reliable
+    //   than routing through Vite's dev-server WebSocket proxy, which can drop
+    //   the Socket.io upgrade handshake.
+    //
+    // In production:  VITE_SERVER_URL is not set, so we fall back to '/', meaning
+    //   the same origin that served the page. This works when the Express server
+    //   also serves the built React files (a common production setup).
     //
     // { auth: { token } } — Socket.io sends this object during the initial
     //   HTTP upgrade handshake (before the WebSocket is fully open).
     //   The server's socketAuth middleware reads socket.handshake.auth.token
     //   and calls next(error) to reject the connection if the token is bad.
-    socketInstance = io('/', { auth: { token } });
+    const serverUrl = import.meta.env.VITE_SERVER_URL ?? '/';
+    socketInstance = io(serverUrl, { auth: { token } });
 
     // ── Handle authentication failures ────────────────────────────────────
     // 'connect_error' fires when the server refuses the connection.
