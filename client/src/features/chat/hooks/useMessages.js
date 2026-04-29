@@ -150,7 +150,32 @@ export function useMessages(roomId) {
     // The server handler (chat.handler.js) also:
     //   - Inserts a room_members row if this is the user's first time joining
     //   - Broadcasts a "has joined" system message to all room members (first join only)
+    //   - US-602: Resets this user's unread_count to 0 in the DB
     socket.emit('join_room', { roomId });
+
+    // ── US-602: Optimistically clear this room's unread badge ─────────────
+    //
+    // The server resets the DB counter when it receives 'join_room', but that
+    // round-trip takes time. We zero the badge in the local React Query cache
+    // RIGHT NOW so the user sees an instant response — no flicker.
+    //
+    // queryClient.setQueryData is a synchronous write to the cache.
+    // It triggers a re-render of RoomItem for this room immediately.
+    //
+    // Why "optimistic"?
+    //   We assume the server will succeed. If the socket event were lost
+    //   (extremely rare), the DB would keep a stale count that clears on the
+    //   next page refresh. This is an acceptable trade-off for instant UX.
+    queryClient.setQueryData(['rooms'], (old) => {
+      // If the rooms cache hasn't loaded yet, leave it alone.
+      if (!old) return old;
+      // Return a new array; only this room's object changes.
+      return old.map(room =>
+        room.id === roomId
+          ? { ...room, unread_count: 0 } // spread to create new object → re-render
+          : room
+      );
+    });
 
     // ── Step 2: Handle incoming real-time messages ─────────────────────────
     // This function is called every time the server emits 'new_message' to

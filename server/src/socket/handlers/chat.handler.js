@@ -1,11 +1,26 @@
 /**
- * Chat Socket Handler (US-203, US-204, US-301)
+ * Chat Socket Handler (US-203, US-204, US-301, US-602)
  *
  * Registered once per connection inside initSocket. Handles three events:
  *
  *   join_room    — user opens a room in the sidebar (US-203)
  *   leave_room   — user confirms leaving a room (US-204)
  *   send_message — user sends a chat message (US-301)
+ *
+ * ─── UNREAD BADGE FLOW (US-602) ───────────────────────────────────────────────
+ *
+ *   When a message is sent:
+ *     1. incrementUnread(roomId, senderId) bumps room_members.unread_count += 1
+ *        for every member EXCEPT the sender.
+ *     2. For each updated row we emit 'badge_update' to that user's private
+ *        socket channel: io.to('user:<userId>').emit('badge_update', { roomId, unreadCount })
+ *     3. The client's useUnreadBadges hook receives it and patches the React
+ *        Query rooms cache so the badge re-renders without a full refetch.
+ *
+ *   When the user opens a room:
+ *     1. resetUnread(roomId, userId) sets room_members.unread_count = 0 in the DB.
+ *     2. The client zeroes the badge optimistically the moment it emits 'join_room'
+ *        (see useMessages.js), so no extra server → client event is needed here.
  *
  * ─── SOCKET.IO ROOMS vs CHAT ROOMS ───────────────────────────────────────────
  * Socket.io has its own concept of "rooms" — named channels that sockets can
@@ -100,6 +115,18 @@ export function registerChatHandlers(io, socket) {
       // Subscribe this socket to the Socket.io channel for the room.
       // After this, io.to(roomId).emit() will reach this client.
       socket.join(roomId);
+
+      // ── US-602: Clear the unread counter for this user ─────────────────────
+      // The user is now looking at the room, so any previously unread messages
+      // are no longer unread. Reset their counter to 0 in the DB.
+      //
+      // This runs on EVERY join_room — both first-ever joins and re-opens —
+      // because the user might have accumulated unread messages between visits.
+      //
+      // The client zeroes the badge optimistically the moment it emits
+      // 'join_room' (see useMessages.js), so the user sees immediate feedback
+      // without waiting for this DB call to complete.
+      await roomsRepo.resetUnread(roomId, userId);
 
       // Idempotently add the user to room_members.
       // Returns true only when a NEW row was inserted (first-ever join).
@@ -225,6 +252,32 @@ export function registerChatHandlers(io, socket) {
       // Other users receive the message via their 'new_message' listener
       // (wired in useMessages on the client).
       socket.to(roomId).emit('new_message', message);
+
+      // ── US-602: Increment unread counts and push badge updates ─────────────
+      //
+      // incrementUnread returns one row per member whose counter was bumped:
+      //   [{ user_id: 'abc', unread_count: 3 }, ...]
+      //
+      // For each row we emit 'badge_update' to that user's private socket
+      // channel ('user:<uuid>' — joined in socket/index.js on connect).
+      // io.to('user:<uuid>') reaches ALL of that user's sockets (multiple tabs).
+      //
+      // The client's useUnreadBadges hook listens for 'badge_update' and
+      // patches the React Query rooms cache to re-render the sidebar badge
+      // without a full refetch of the rooms list.
+      //
+      // We do NOT increment the sender (incrementUnread excludes them via
+      // WHERE user_id != $2) because they can see their own message immediately.
+      const updatedMembers = await roomsRepo.incrementUnread(roomId, userId);
+
+      for (const { user_id, unread_count } of updatedMembers) {
+        // 'user:<uuid>' is the private channel each socket joins in index.js.
+        // This reaches the user even if they have zero or multiple tabs open.
+        io.to(`user:${user_id}`).emit('badge_update', {
+          roomId,
+          unreadCount: unread_count,
+        });
+      }
 
       // Return the saved message to the sender via the ack callback.
       // The client uses this to replace the optimistic (temp-id) message

@@ -75,6 +75,30 @@ export function initSocket(io) {
   //   socket.on('join_room', handler) attaches the handler to THAT socket only.
   //   If we registered outside, all sockets would share one handler — impossible.
   io.on('connection', socket => {
+    // ── US-602: Join a user-private Socket.io channel ───────────────────────
+    // Socket.io supports "rooms" (named channels) as a way to broadcast to a
+    // specific group of sockets. We use one room per user: 'user:<uuid>'.
+    //
+    // Why do we need this?
+    //   When a message is sent to Room X, the server increments unread_count for
+    //   all OTHER members and needs to push a 'badge_update' event to each of
+    //   them. To reach a specific user, we emit to their personal channel:
+    //
+    //     io.to('user:<userId>').emit('badge_update', { roomId, unreadCount })
+    //
+    //   If the user has multiple tabs open (multiple sockets), ALL of them join
+    //   'user:<userId>' here, so all tabs receive the badge update. This keeps
+    //   the badge in sync across tabs automatically.
+    //
+    // Why not use socket.id directly?
+    //   socket.id changes on every reconnect and is unknown to the server-side
+    //   business logic (the chat handler only knows user IDs from the JWT).
+    //   A stable 'user:<uuid>' channel is much easier to target.
+    //
+    // socket.join() is safe to call immediately after authentication because
+    // socketAuth has already set socket.data.user before 'connection' fires.
+    socket.join(`user:${socket.data.user.id}`);
+
     // registerPresenceHandlers: tracks online/offline state (US-401 — stub for now).
     // Calling a stub is a safe no-op; it will start doing work once implemented.
     registerPresenceHandlers(io, socket);

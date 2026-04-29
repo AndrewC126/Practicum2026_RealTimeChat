@@ -38,14 +38,23 @@ import { pool } from '../db/pool.js';
 /**
  * Returns all public rooms the given user is currently a member of.
  * Ordered by most recent activity first so the most active rooms bubble up.
+ *
+ * US-602: rm.unread_count is now included in every row so the client can
+ * render a badge without a separate query. The value comes directly from
+ * the room_members row for THIS user — each user has their own counter.
  */
 export async function findAllForUser(userId) {
   // JOIN with room_members filters the result to rooms where this user has a
   // membership row. Once they leave (row deleted), the room disappears from
   // this query's results.
+  //
+  // rm.unread_count — the per-user unread counter for this room. It is
+  // incremented by incrementUnread() when a message arrives and reset to 0
+  // by resetUnread() when the user opens the room.
   const { rows } = await pool.query(
     `SELECT rs.id, rs.name, rs.description, rs.is_private, rs.owner_id,
-            rs.created_at, rs.member_count, rs.last_message_at
+            rs.created_at, rs.member_count, rs.last_message_at,
+            rm.unread_count
      FROM   room_summary rs
      JOIN   room_members rm ON rm.room_id = rs.id
      WHERE  rs.is_private = false
@@ -54,6 +63,71 @@ export async function findAllForUser(userId) {
     [userId]
   );
   return rows;
+}
+
+/**
+ * Increments unread_count by 1 for every member of the room EXCEPT the
+ * user who sent the message.
+ *
+ * Called by chat.handler.js after a message is saved so that absent members
+ * know there is new content they haven't seen.
+ *
+ * Returns an array of { user_id, unread_count } rows — one for every member
+ * whose counter was incremented. The chat handler uses these to push a
+ * badge_update socket event to each affected user's socket(s).
+ *
+ * ─── HOW THE SQL WORKS ────────────────────────────────────────────────────────
+ * UPDATE ... SET unread_count = unread_count + 1
+ *   Adds 1 to the current value. The schema enforces unread_count >= 0, so
+ *   this can never go negative.
+ *
+ * WHERE room_id = $1 AND user_id != $2
+ *   Targets all members of the room EXCEPT the sender. The sender can see
+ *   their own message immediately — they don't need an unread badge.
+ *
+ * RETURNING user_id, unread_count
+ *   Returns the updated rows so we know which users to notify and what their
+ *   new count is. Without RETURNING we'd need a second SELECT.
+ *
+ * @param {string} roomId       — UUID of the room where the message was sent
+ * @param {string} exceptUserId — UUID of the sender (excluded from increment)
+ * @returns {Promise<Array<{ user_id: string, unread_count: number }>>}
+ */
+export async function incrementUnread(roomId, exceptUserId) {
+  const { rows } = await pool.query(
+    `UPDATE room_members
+     SET    unread_count = unread_count + 1
+     WHERE  room_id = $1
+       AND  user_id != $2
+     RETURNING user_id, unread_count`,
+    [roomId, exceptUserId]
+  );
+  return rows;
+}
+
+/**
+ * Resets unread_count to 0 for a specific user in a specific room.
+ *
+ * Called by chat.handler.js when the user emits 'join_room' (i.e., when
+ * they open and start viewing the room). The user can now see all messages,
+ * so there is nothing left unread.
+ *
+ * ─── WHY UPDATE INSTEAD OF SELECT + CONDITIONAL UPDATE ───────────────────────
+ * A single UPDATE is atomic and does not require a separate round-trip to
+ * check the current value first. If unread_count is already 0, Postgres
+ * still runs the UPDATE but changes nothing — no harm done.
+ *
+ * @param {string} roomId — UUID of the room being opened
+ * @param {string} userId — UUID of the user opening the room
+ */
+export async function resetUnread(roomId, userId) {
+  await pool.query(
+    `UPDATE room_members
+     SET    unread_count = 0
+     WHERE  room_id = $1
+       AND  user_id = $2`,
+    [roomId, userId]
+  );
 }
 
 export async function findByName(name) {

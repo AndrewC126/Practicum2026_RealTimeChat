@@ -66,13 +66,14 @@
  * 2. useAuth().logout() dispatches Redux `logout` → clears token + user state
  * 3. navigate('/login') redirects to the login page
  */
-import { useState, useEffect }  from 'react';
-import { Outlet, useNavigate }  from 'react-router-dom';
-import { useSelector }          from 'react-redux';
-import { useAuth }              from '../../features/auth/hooks/useAuth';
-import { selectActiveRoomId }   from '../../features/rooms/roomsSlice';
-import { useMobile }            from '../hooks/useMobile';
-import Sidebar                  from './Sidebar';
+import { useState, useEffect }       from 'react';
+import { Outlet, useNavigate }       from 'react-router-dom';
+import { useSelector }               from 'react-redux';
+import { useAuth }                   from '../../features/auth/hooks/useAuth';
+import { selectActiveRoomId }        from '../../features/rooms/roomsSlice';
+import { useMobile }                 from '../hooks/useMobile';
+import { useUnreadBadges }           from '../../features/chat/hooks/useUnreadBadges';
+import Sidebar                       from './Sidebar';
 
 // Shared constant so the topBar height and the Sidebar's `top` offset on mobile
 // are always identical — change it in one place and both update.
@@ -86,6 +87,18 @@ export default function Layout() {
   // useMobile() attaches a resize listener so this updates on window resize
   // or device rotation — no page refresh needed.
   const isMobile = useMobile();
+
+  // ── US-602: Real-time unread badge listener ───────────────────────────────
+  // Called here (in Layout) because Layout stays mounted for the entire
+  // authenticated session. This means the 'badge_update' socket listener is
+  // always active — even when the user is idle or has no room selected.
+  //
+  // If we called useUnreadBadges() inside ChatPanel instead, the listener
+  // would not exist when ChatPanel shows the empty state (no room selected),
+  // and badge updates would be silently dropped.
+  //
+  // The hook returns nothing — all its work is side-effect driven.
+  useUnreadBadges();
 
   // ── Sidebar open/close state ──────────────────────────────────────────────
   // On mobile:  controls whether the drawer sidebar is slid in or out.
