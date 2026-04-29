@@ -137,7 +137,21 @@ Copy the example environment file and fill in your values:
 
 ```bash
 cd server
+```
+
+**Git Bash / macOS / Linux:**
+```bash
 cp .env.example .env
+```
+
+**Windows Command Prompt:**
+```cmd
+copy .env.example .env
+```
+
+**Windows PowerShell:**
+```powershell
+Copy-Item .env.example .env
 ```
 
 Open `server/.env` and update the values:
