@@ -10,6 +10,10 @@
  *     </QueryClientProvider>
  *   </Provider>
  */
+// Global CSS — imported here so it applies to every component in the app.
+// Handles box-sizing reset, overflow prevention, and 44 px touch targets (US-601).
+// This is the ONE place to import global styles; all other styles live inline.
+import './index.css';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Provider } from 'react-redux';
