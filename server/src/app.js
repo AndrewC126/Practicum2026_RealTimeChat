@@ -19,32 +19,35 @@
  *   Listening once:
  *     Call httpServer.listen(PORT) — NOT app.listen() — because we need both
  *     the HTTP (Express) and WebSocket (Socket.io) traffic on the same port.
- *
- * CORS configuration:
- *   The Socket.io Server's `cors` option must match the client origin. During
- *   dev this is http://localhost:5173 (set in .env as CLIENT_URL). In
- *   production replace this with the deployed client URL.
- *
- * What still needs to be wired up in this file:
- *   1. express.json()         — parse JSON request bodies
- *   2. cors middleware        — allow the client to call the API (REST)
- *   3. Route registration:
- *        app.use('/api/auth',     authRouter)
- *        app.use('/api/rooms',    roomsRouter)
- *        app.use('/api/rooms',    messagesRouter)
- *   4. Error handler (must be last):
- *        app.use(errorHandler)
- *   5. Socket initialization:
- *        initSocket(io)
- *   6. Server listen:
- *        httpServer.listen(process.env.PORT, () => console.log(`Listening on ${PORT}`))
  */
+import 'dotenv/config'; // loads .env into process.env — must be first
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import cors from 'cors';
+import authRouter  from './routes/auth.routes.js';
+import roomsRouter from './routes/rooms.routes.js';
+import { errorHandler } from './middleware/error.middleware.js';
 
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: process.env.CLIENT_URL } });
+
+// Parse incoming JSON request bodies (required before any route reads req.body)
+app.use(express.json());
+
+// Allow the Vite dev server (CLIENT_URL) to call the API without CORS errors
+app.use(cors({ origin: process.env.CLIENT_URL }));
+
+app.use('/api/auth',  authRouter);
+app.use('/api/rooms', roomsRouter);
+
+// Error handler must be registered after all routes
+app.use(errorHandler);
+
+const PORT = process.env.PORT ?? 3001;
+httpServer.listen(PORT, () => {
+  console.log(`Server listening on http://localhost:${PORT}`);
+});
 
 export { app, httpServer, io };

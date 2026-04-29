@@ -11,36 +11,35 @@
  *     token: string | null,                     // JWT returned by the server
  *   }
  *
- * Why store the token in Redux?
- *   The Axios interceptor in services/api.js reads the token from the Redux
- *   store to attach it to every HTTP request. This avoids having to pass the
- *   token around manually.
- *
- * Persisting the token across page reloads:
- *   Redux state is in memory and is lost on refresh. The common pattern is:
- *     - On setCredentials: save token to localStorage
- *     - On app start (main.jsx): read token from localStorage and pre-populate
- *       the store by dispatching setCredentials if a token exists
- *     - On logout: clear localStorage
- *
- * Implementation checklist:
- *   1. import { createSlice } from '@reduxjs/toolkit'
- *   2. Define the initialState (read from localStorage if available)
- *   3. Create the slice with two reducers:
- *        setCredentials(state, action) {
- *          state.user  = action.payload.user;
- *          state.token = action.payload.token;
- *          localStorage.setItem('token', action.payload.token);
- *        }
- *        logout(state) {
- *          state.user  = null;
- *          state.token = null;
- *          localStorage.removeItem('token');
- *        }
- *   4. Export the action creators: export const { setCredentials, logout } = authSlice.actions
- *   5. Export the reducer as the default export: export default authSlice.reducer
- *   6. Export a selector for convenience:
- *        export const selectCurrentUser = state => state.auth.user
+ * The token is persisted to localStorage so it survives page refreshes.
+ * On app start, main.jsx reads it back so the user stays logged in.
  */
+import { createSlice } from '@reduxjs/toolkit';
 
-// Redux slice for auth state (current user, token)
+const authSlice = createSlice({
+  name: 'auth',
+  initialState: {
+    user: null,
+    // Restore from localStorage on first load so refresh doesn't log the user out
+    token: localStorage.getItem('token') ?? null,
+  },
+  reducers: {
+    setCredentials(state, action) {
+      state.user  = action.payload.user;
+      state.token = action.payload.token;
+      localStorage.setItem('token', action.payload.token);
+    },
+    logout(state) {
+      state.user  = null;
+      state.token = null;
+      localStorage.removeItem('token');
+    },
+  },
+});
+
+export const { setCredentials, logout } = authSlice.actions;
+
+export const selectCurrentUser = state => state.auth.user;
+export const selectToken       = state => state.auth.token;
+
+export default authSlice.reducer;

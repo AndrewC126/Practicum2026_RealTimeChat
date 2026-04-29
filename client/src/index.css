@@ -1,0 +1,125 @@
+/*
+ * Global CSS Reset and Base Styles (US-601)
+ *
+ * This file is imported once in main.jsx and applies to every element in the
+ * app. It handles three concerns for US-601:
+ *
+ *   1. Box-sizing reset        (AC4 — prevents elements from overflowing their
+ *                               containers due to padding being added to width)
+ *
+ *   2. Overflow prevention     (AC4 — no horizontal scrolling at any screen size)
+ *
+ *   3. Touch-friendly targets  (AC3 — every button and input meets the 44 × 44 px
+ *                               minimum recommended by Apple HIG and Google
+ *                               Material Design for touch usability)
+ *
+ * ─── WHY A GLOBAL CSS FILE INSTEAD OF INDIVIDUAL INLINE STYLES ───────────────
+ * The app uses React inline styles (style={{ ... }}) for component-specific
+ * design. Inline styles override CSS rules for conflicting properties, but
+ * they do NOT override CSS for properties the inline style doesn't mention.
+ *
+ * For example, if an inline style is { background: 'blue', color: 'white' }
+ * and a CSS rule says `button { min-height: 44px }`, the min-height STILL
+ * applies because the inline style doesn't set min-height. The CSS fills in
+ * the gap without interfering with any component's design choices.
+ *
+ * This means one CSS file handles touch targets for EVERY button in the app —
+ * login form, sidebar, message input, room items — without touching each file.
+ *
+ * ─── SPECIFICITY AND INLINE STYLES ──────────────────────────────────────────
+ * CSS specificity order (lowest → highest):
+ *   1. Element selectors (button, input)  ← this file
+ *   2. Class selectors (.btn)
+ *   3. ID selectors (#submit)
+ *   4. Inline styles (style={{ ... }})   ← highest
+ *
+ * A component can opt OUT of any rule here simply by adding the property to
+ * its inline style. For example, a utility "dismiss" button that should be
+ * smaller than 44px can add { minHeight: 'auto' } to its style prop and that
+ * inline value will win over this CSS.
+ */
+
+/* ── 1. Box-sizing reset ─────────────────────────────────────────────────────
+ *
+ * By default, browsers use box-sizing: content-box, which means:
+ *   declared width/height = content only
+ *   actual rendered size  = content + padding + border
+ *
+ * Example (content-box): input { width: 100%; padding: 0.5rem }
+ *   On a 320px-wide container: the input renders at 320px + 8px + 8px = 336px
+ *   → overflows the container → causes horizontal scrolling
+ *
+ * With box-sizing: border-box:
+ *   declared width/height = content + padding + border
+ *   actual rendered size  = exactly the declared width/height
+ *
+ * Example (border-box): same input renders at exactly 320px → no overflow ✓
+ *
+ * The * selector and ::before/::after pseudo-elements together reset EVERY
+ * element in the page — this is the standard "CSS reset" approach used by
+ * Bootstrap, Tailwind, and most modern CSS frameworks.
+ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* ── 2. Overflow prevention ──────────────────────────────────────────────────
+ *
+ * overflow-x: hidden on <html> and <body> prevents the page from displaying
+ * a horizontal scrollbar, which satisfies AC4: "legible at all screen sizes
+ * without horizontal scrolling."
+ *
+ * margin: 0 removes the browser's default 8px body margin. Without this,
+ * the app would have a slight gap on all sides even when the React app fills
+ * the viewport — visible as a white strip next to the blue top bar.
+ */
+html,
+body {
+  margin: 0;
+  overflow-x: hidden;
+}
+
+/* ── 3. Touch-friendly tap targets (AC3) ────────────────────────────────────
+ *
+ * Apple's Human Interface Guidelines and Google's Material Design both specify
+ * a MINIMUM touch target size of 44 × 44 pixels. Elements smaller than this
+ * are difficult to tap accurately on a touchscreen, especially for users with
+ * motor impairments.
+ *
+ * min-height and min-width (not height/width) are used so that:
+ *   - Elements that need to be LARGER than 44px are unaffected
+ *   - Elements that are currently smaller automatically grow to 44px
+ *   - No content is clipped or hidden
+ *
+ * Why buttons AND inputs/textarea?
+ *   Both are interactive elements a user must tap. A text input that is only
+ *   24px tall is easy to miss on a small touchscreen.
+ *
+ * ─── HOW INLINE STYLES INTERACT WITH THIS ─────────────────────────────────
+ * The components in this project use inline styles. Those inline styles do
+ * NOT set min-height or min-width on most elements, so this CSS applies freely.
+ *
+ * If a specific element should be smaller (e.g., a compact icon-only button),
+ * its inline style can override this rule:
+ *   <button style={{ minHeight: 'auto', minWidth: 'auto' }}>✕</button>
+ *
+ * ─── VISUAL IMPACT ─────────────────────────────────────────────────────────
+ * Most interactive elements in this app are already close to 44px. The main
+ * visible changes:
+ *   • Room sidebar items: slightly taller rows (better spacing, easier to tap)
+ *   • Logout button: taller (fits naturally inside the 52px header bar)
+ *   • Message input / send button: slightly taller (more comfortable to use)
+ *   • Login / register form inputs and buttons: already close, minor increase
+ */
+button {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+input,
+textarea,
+select {
+  min-height: 44px;
+}

@@ -1,33 +1,35 @@
 /**
  * Rooms Routes — GET /api/rooms, POST /api/rooms, DELETE /api/rooms/:id/members
  *
- * Mounted in app.js as: app.use('/api/rooms', roomsRouter)
- * All routes here are prefixed with /api/rooms.
+ * ─── HOW EXPRESS ROUTER WORKS ────────────────────────────────────────────────
+ * Router() creates a mini Express app. You define routes on it, then mount
+ * it in app.js with app.use('/api/rooms', roomsRouter). Every path here is
+ * automatically prefixed with /api/rooms.
  *
- * Routes to register:
- *   GET /
- *     List all public rooms (plus rooms the user is a member of if private)
- *     Requires auth (need to know which private rooms to include)
- *     → calls listRooms controller
+ * Route parameters use a colon prefix:
+ *   router.delete('/:id/members', ...)
+ *   A request to DELETE /api/rooms/abc-123/members sets req.params.id = 'abc-123'
  *
- *   POST /
- *     Create a new room
- *     Body: { name, description, isPrivate }
- *     Requires auth (the creator becomes the owner)
- *     → calls createRoom controller
+ * ─── MIDDLEWARE CHAINING ─────────────────────────────────────────────────────
+ * router.get('/', requireAuth, listRooms)
+ *                ↑             ↑
+ *          runs first      runs if requireAuth calls next()
  *
- *   DELETE /:id/members
- *     Leave a room (remove the current user from room_members)
- *     Requires auth
- *     → calls leaveRoom controller
- *
- * Implementation:
- *   import { requireAuth } from '../middleware/auth.middleware.js';
- *   import { listRooms, createRoom, leaveRoom } from '../controllers/rooms.controller.js';
- *   router.get('/',                requireAuth, listRooms);
- *   router.post('/',               requireAuth, createRoom);
- *   router.delete('/:id/members',  requireAuth, leaveRoom);
+ * You can chain as many middleware functions as you need before the final handler.
  */
 import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware.js';
+import { listRooms, createRoom, leaveRoom } from '../controllers/rooms.controller.js';
+
 const router = Router();
+
+// GET /api/rooms — list all public rooms
+router.get('/', requireAuth, listRooms);
+
+// POST /api/rooms — create a new room
+router.post('/', requireAuth, createRoom);
+
+// DELETE /api/rooms/:id/members — leave a room
+router.delete('/:id/members', requireAuth, leaveRoom);
+
 export default router;

@@ -1,28 +1,40 @@
 /**
  * Messages Routes — GET /api/rooms/:id/messages
  *
- * Mounted in app.js as: app.use('/api/rooms', messagesRouter)
- * (Shares the /api/rooms prefix with rooms.routes.js because the messages
- * resource is nested under rooms.)
+ * ─── HOW THIS ROUTE IS MOUNTED ───────────────────────────────────────────────
+ * In app.js:
+ *   app.use('/api/rooms', messagesRouter);
  *
- * Routes to register:
- *   GET /:id/messages
- *     Fetch paginated message history for a room (US-501, US-502)
- *     Query params: limit (default 50), offset (default 0)
- *     Example: GET /api/rooms/abc-123/messages?limit=50&offset=100
- *     Requires auth (can't read messages for rooms you haven't joined)
- *     → calls getMessages controller
+ * So a request to GET /api/rooms/abc-123/messages is matched like this:
+ *   app.use('/api/rooms', ...)       → strips '/api/rooms', leaves '/abc-123/messages'
+ *   router.get('/:id/messages', ...) → :id captures 'abc-123'
+ *   req.params.id === 'abc-123'
  *
- * Implementation:
- *   import { requireAuth } from '../middleware/auth.middleware.js';
- *   import { getMessages } from '../controllers/messages.controller.js';
- *   router.get('/:id/messages', requireAuth, getMessages);
+ * Both rooms.routes.js and messages.routes.js share the '/api/rooms' prefix.
+ * Express runs them independently — having two routers on the same prefix is
+ * perfectly fine; Express tries each in the order they were registered.
  *
- * Pagination pattern (LIMIT / OFFSET):
- *   The client sends the offset of the oldest message it has loaded.
- *   The server queries: SELECT ... ORDER BY created_at DESC LIMIT $1 OFFSET $2
- *   The client calls fetchNextPage() when scrolling up, incrementing the offset.
+ * ─── PAGINATION ──────────────────────────────────────────────────────────────
+ * Query parameters control how many messages are returned and where to start:
+ *   GET /api/rooms/:id/messages              → 50 most recent messages
+ *   GET /api/rooms/:id/messages?limit=20     → 20 most recent messages
+ *   GET /api/rooms/:id/messages?offset=50    → 50 most recent, skip the newest 50
+ *
+ * The controller parses and validates these values; this route file just wires
+ * the path to the middleware chain.
+ *
+ * ─── AUTHENTICATION ──────────────────────────────────────────────────────────
+ * requireAuth runs BEFORE getMessages. If the JWT is missing or invalid,
+ * requireAuth sends a 401 and getMessages never runs. This prevents
+ * unauthenticated users from reading private message history.
  */
-import { Router } from 'express';
+import { Router }     from 'express';
+import { requireAuth } from '../middleware/auth.middleware.js';
+import { getMessages } from '../controllers/messages.controller.js';
+
 const router = Router();
+
+// GET /api/rooms/:id/messages — load historical messages for a room
+router.get('/:id/messages', requireAuth, getMessages);
+
 export default router;

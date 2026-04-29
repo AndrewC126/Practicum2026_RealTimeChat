@@ -1,38 +1,92 @@
 /**
- * socketAuth — Socket.io Authentication Middleware
+ * socketAuth — Socket.io Authentication Middleware (US-501)
  *
- * Socket.io middleware works like Express middleware: it runs before the
- * 'connection' event fires and can reject the connection by calling next(error).
+ * Socket.io middleware runs BEFORE the 'connection' event fires on the server.
+ * It works similarly to Express middleware:
+ *   - Receives (socket, next)
+ *   - Calls next() to allow the connection
+ *   - Calls next(new Error(...)) to reject it
  *
- * Where the token comes from:
- *   The client passes the JWT in the handshake:
- *     io('/', { auth: { token: jwtToken } })
- *   On the server, read it from:
- *     socket.handshake.auth.token
+ * ─── WHY AUTHENTICATE SOCKETS? ───────────────────────────────────────────────
+ * Without this middleware, ANYONE — including unauthenticated users — could open
+ * a WebSocket connection and emit events like 'join_room' or 'send_message'.
+ * This middleware ensures every connected socket belongs to a verified user.
  *
- * Verification:
- *   import jwt from 'jsonwebtoken';
- *   try {
- *     const payload = jwt.verify(token, process.env.JWT_SECRET);
- *     socket.data.user = payload;   // attach the decoded user to the socket
- *     next();
- *   } catch (err) {
- *     next(new Error('Authentication error'));  // rejects the connection
- *   }
+ * ─── WHERE THE TOKEN COMES FROM ──────────────────────────────────────────────
+ * The client passes the JWT during the initial Socket.io handshake:
  *
- * Why attach to socket.data?
- *   socket.data persists for the lifetime of the connection. Event handlers
- *   (chat.handler, presence.handler, etc.) read socket.data.user to know
- *   which user is performing each action without re-verifying the token on
- *   every event.
+ *   // Client (useSocket.js):
+ *   io('/', { auth: { token: jwtToken } })
  *
- * Implementation checklist:
- *   - Import jwt and process.env.JWT_SECRET
- *   - Read token from socket.handshake.auth.token
- *   - If no token: call next(new Error('No token'))
- *   - If invalid: call next(new Error('Invalid token'))
- *   - If valid: set socket.data.user = decoded payload, call next()
+ * Socket.io sends this `auth` object along with the connection request.
+ * On the server, it's available on:
+ *   socket.handshake.auth.token
+ *
+ * ─── WHY socket.data.user? ───────────────────────────────────────────────────
+ * Once we verify the JWT, we decode its payload (which contains id, username,
+ * email — whatever the auth controller signed into it). We attach that payload
+ * to `socket.data.user` so every event handler can read it:
+ *
+ *   // In any handler (e.g., chat.handler.js):
+ *   const { id: userId, username } = socket.data.user;
+ *
+ * `socket.data` persists for the entire lifetime of the connection.
+ * Re-verifying the token on every single event would be wasteful — we do it
+ * once here and then trust socket.data.user in all handlers.
+ *
+ * ─── JWT VERIFICATION ────────────────────────────────────────────────────────
+ * jwt.verify(token, secret) does two things:
+ *   1. Checks the signature — was this token signed by OUR server's secret?
+ *      If someone tampered with the payload, the signature won't match.
+ *   2. Checks `exp` (expiry) — has the token's expiry timestamp passed?
+ *      If so, it throws even if the signature is valid.
+ *
+ * If either check fails, verify throws. We catch it and call next(error),
+ * which tells Socket.io to refuse this connection.
+ *
+ * ─── ERROR FLOW ──────────────────────────────────────────────────────────────
+ * When next(new Error('...')) is called, Socket.io:
+ *   1. Does NOT emit the 'connection' event — no handler runs
+ *   2. Sends an error back to the client
+ *   3. The client's socket.on('connect_error', handler) fires with that error
  */
+import jwt from 'jsonwebtoken';
 
-// Validates JWT passed in socket.handshake.auth.token before any events fire
-export function socketAuth(socket, next) {}
+/**
+ * socketAuth — validates the JWT from the handshake before allowing connection.
+ *
+ * @param {Socket} socket — the incoming socket (not yet connected)
+ * @param {Function} next — call next() to allow, next(err) to reject
+ */
+export function socketAuth(socket, next) {
+  // The token was sent by the client in the `auth` option of io():
+  //   io('/', { auth: { token: '...' } })
+  // Socket.io makes it available at socket.handshake.auth.token.
+  const token = socket.handshake.auth.token;
+
+  // No token = unauthenticated client. Reject immediately.
+  if (!token) {
+    return next(new Error('No authentication token provided'));
+  }
+
+  try {
+    // jwt.verify throws if the token is expired, malformed, or signed with a
+    // different secret. On success it returns the decoded payload object.
+    //
+    // process.env.JWT_SECRET must match the secret used in auth.controller.js
+    // when the token was originally signed with jwt.sign().
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Attach the decoded payload to the socket so every event handler can
+    // identify which user this socket belongs to — no re-verification needed.
+    // Payload shape (from auth.controller.js): { id, username, email, iat, exp }
+    socket.data.user = payload;
+
+    // Call next() with no arguments = "this connection is allowed, proceed."
+    next();
+  } catch (err) {
+    // jwt.verify threw — token is expired, tampered with, or invalid.
+    // next(error) rejects the connection before the 'connection' event fires.
+    next(new Error('Invalid or expired token'));
+  }
+}
