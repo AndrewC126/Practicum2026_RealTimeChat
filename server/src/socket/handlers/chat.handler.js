@@ -156,6 +156,7 @@ export function registerChatHandlers(io, socket) {
 
   // ── leave_room ─────────────────────────────────────────────────────────────
   socket.on('leave_room', async ({ roomId }, ack) => {
+    console.log(`[leave_room] received — roomId: ${roomId}, user: ${socket.data.user?.username}`);
     try {
       const { id: userId, username } = socket.data.user;
 

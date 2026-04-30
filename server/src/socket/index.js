@@ -75,6 +75,8 @@ export function initSocket(io) {
   //   socket.on('join_room', handler) attaches the handler to THAT socket only.
   //   If we registered outside, all sockets would share one handler — impossible.
   io.on('connection', socket => {
+    console.log(`[socket] connected — user: ${socket.data.user?.username}, id: ${socket.id}`);
+
     // ── US-602: Join a user-private Socket.io channel ───────────────────────
     // Socket.io supports "rooms" (named channels) as a way to broadcast to a
     // specific group of sockets. We use one room per user: 'user:<uuid>'.

@@ -28,10 +28,17 @@ import cors from 'cors';
 import authRouter  from './routes/auth.routes.js';
 import roomsRouter from './routes/rooms.routes.js';
 import { errorHandler } from './middleware/error.middleware.js';
+import { initSocket }   from './socket/index.js';
 
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: process.env.CLIENT_URL } });
+
+// Wire up Socket.io authentication middleware and all event handlers.
+// Must be called after `io` is created but before the server starts listening.
+// Without this call, `io` exists but has no handlers — every socket event
+// (join_room, leave_room, send_message, etc.) is silently ignored.
+initSocket(io);
 
 // Parse incoming JSON request bodies (required before any route reads req.body)
 app.use(express.json());
