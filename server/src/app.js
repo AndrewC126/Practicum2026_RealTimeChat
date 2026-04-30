@@ -25,8 +25,9 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import authRouter  from './routes/auth.routes.js';
-import roomsRouter from './routes/rooms.routes.js';
+import authRouter     from './routes/auth.routes.js';
+import roomsRouter    from './routes/rooms.routes.js';
+import messagesRouter from './routes/messages.routes.js';
 import { errorHandler } from './middleware/error.middleware.js';
 import { initSocket }   from './socket/index.js';
 
@@ -48,6 +49,11 @@ app.use(cors({ origin: process.env.CLIENT_URL }));
 
 app.use('/api/auth',  authRouter);
 app.use('/api/rooms', roomsRouter);
+// messagesRouter handles GET /api/rooms/:id/messages (paginated history).
+// It shares the /api/rooms prefix with roomsRouter — Express runs both
+// routers and the first one whose path pattern matches wins.
+// messagesRouter's pattern is /:id/messages, which roomsRouter has no overlap with.
+app.use('/api/rooms', messagesRouter);
 
 // Error handler must be registered after all routes
 app.use(errorHandler);
