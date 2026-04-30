@@ -79,6 +79,7 @@ import { useTyping }           from '../hooks/useTyping';
 import MessageList             from './MessageList';
 import MessageInput            from './MessageInput';
 import TypingIndicator         from './TypingIndicator';
+import InviteModal             from '../../rooms/components/InviteModal';
 
 export default function ChatPanel() {
   // Read which room the user clicked in the sidebar.
@@ -96,6 +97,10 @@ export default function ChatPanel() {
   // This prevents the user from clicking "Leave Room" multiple times while
   // waiting for the server acknowledgment, which would send duplicate events.
   const [isLeaving, setIsLeaving] = useState(false);
+
+  // Controls whether the Invite People modal (US-206) is open.
+  // Stored as local state (not Redux) because only ChatPanel cares about it.
+  const [showInviteModal, setShowInviteModal] = useState(false);
 
   // Look up the room's metadata from the React Query cache so we can display
   // the room name in the header without a separate network request.
@@ -205,23 +210,46 @@ export default function ChatPanel() {
         </div>
 
         {/*
-         * Leave Room button (US-204 AC: "A Leave Room option is accessible
-         * while inside a room").
-         *
-         * disabled={isLeaving} prevents double-clicks while the socket event
-         * is in flight. The button label changes to give visual feedback.
-         *
-         * style={{ opacity }} visually dims the button while in flight so the
-         * user knows something is happening.
+         * ── Header button group ───────────────────────────────────────────
+         * Invite and Leave sit in a flex row on the right of the header.
+         * Using a wrapper div keeps them together without changing the
+         * space-between layout of the parent <header>.
          */}
-        <button
-          onClick={handleLeaveRoom}
-          disabled={isLeaving}
-          style={{ ...styles.leaveButton, opacity: isLeaving ? 0.6 : 1 }}
-          title="Leave this room"
-        >
-          {isLeaving ? 'Leaving…' : 'Leave Room'}
-        </button>
+        <div style={styles.headerActions}>
+
+          {/*
+           * Invite button — US-206 AC: "An Invite button is accessible from
+           * within the active room's header."
+           *
+           * Opens the InviteModal where the user can search for and invite
+           * other registered users. The button is always enabled (no loading
+           * state needed — the modal handles its own async state).
+           */}
+          <button
+            onClick={() => setShowInviteModal(true)}
+            style={styles.inviteButton}
+            title="Invite people to this room"
+          >
+            Invite
+          </button>
+
+          {/*
+           * Leave Room button (US-204 AC: "A Leave Room option is accessible
+           * while inside a room").
+           *
+           * disabled={isLeaving} prevents double-clicks while the socket event
+           * is in flight. The button label changes to give visual feedback.
+           */}
+          <button
+            onClick={handleLeaveRoom}
+            disabled={isLeaving}
+            style={{ ...styles.leaveButton, opacity: isLeaving ? 0.6 : 1 }}
+            title="Leave this room"
+          >
+            {isLeaving ? 'Leaving…' : 'Leave Room'}
+          </button>
+
+        </div>
 
       </header>
 
@@ -283,6 +311,23 @@ export default function ChatPanel() {
         onAfterSend={stopTyping}
       />
 
+      {/*
+       * InviteModal (US-206) — rendered at the end of the panel so it sits on
+       * top of everything via its position:fixed overlay. Conditional rendering
+       * means it is fully unmounted when closed, which automatically resets
+       * the modal's search text and invite-loading state.
+       *
+       * We pass activeRoom?.name so the modal can display "Invite People to
+       * #general" in its title — friendlier than just a UUID.
+       */}
+      {showInviteModal && (
+        <InviteModal
+          roomId={activeRoomId}
+          roomName={activeRoom?.name ?? '…'}
+          onClose={() => setShowInviteModal(false)}
+        />
+      )}
+
     </div>
   );
 }
@@ -333,6 +378,26 @@ const styles = {
     whiteSpace:   'nowrap',
     overflow:     'hidden',
     textOverflow: 'ellipsis',
+  },
+
+  // Flex row wrapping the Invite and Leave buttons in the header right side
+  headerActions: {
+    display:    'flex',
+    alignItems: 'center',
+    gap:        '0.5rem',
+    flexShrink: 0,  // never compress the button group
+  },
+
+  // Invite button — blue outline style, secondary to the room name
+  inviteButton: {
+    padding:      '0.3rem 0.75rem',
+    background:   'transparent',
+    color:        '#1976d2',
+    border:       '1px solid #1976d2',
+    borderRadius: '4px',
+    fontSize:     '0.8rem',
+    cursor:       'pointer',
+    transition:   'opacity 0.15s',
   },
 
   // Leave Room button — subtle destructive styling (red text, no fill)

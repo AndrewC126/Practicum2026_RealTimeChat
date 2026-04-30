@@ -17,6 +17,9 @@
  * We use req.user.id wherever we need to know which user made the request.
  */
 import * as roomsService from '../services/rooms.service.js';
+// Note: searchInvitees and checkMembership are both on roomsService (see rooms.service.js)
+// — we do not need a separate import for usersRepo here because the service layer owns
+// the cross-repository orchestration.
 
 export async function listRooms(req, res, next) {
   try {
@@ -71,6 +74,49 @@ export async function listPublicRooms(req, res, next) {
   try {
     const rooms = await roomsService.getPublicRooms(req.user.id);
     res.status(200).json(rooms);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * searchInvitees — GET /api/rooms/:id/invitees?q=<username>
+ *
+ * Returns users whose username matches the search query and who are NOT
+ * already members of the room. Used by the InviteModal to populate live
+ * search results as the user types.
+ *
+ * ─── AUTHORIZATION ───────────────────────────────────────────────────────────
+ * AC: "Only current members of the room can invite others."
+ * We verify the requesting user is a member BEFORE running the search.
+ * If they are not, we respond with 403 Forbidden — the same error the socket
+ * handler returns for the same violation. Two entry points, same rule.
+ *
+ * ─── QUERY PARAMETER VALIDATION ──────────────────────────────────────────────
+ * req.query.q is the `?q=...` part of the URL (provided by the search input).
+ * We require at least 1 character so we don't accidentally return all users
+ * when the search box is empty (which would be a privacy concern on a large
+ * deployment). The limit defaults to 10 results.
+ */
+export async function searchInvitees(req, res, next) {
+  try {
+    const roomId = req.params.id;      // :id segment from the URL
+    const userId = req.user.id;        // from the JWT (requireAuth middleware)
+    const query  = req.query.q ?? ''; // ?q= search string
+
+    // Require a non-empty search query so we don't return the whole user table
+    if (!query.trim()) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    // Enforce membership — only room members may use the invite feature
+    const membershipOk = await roomsService.checkMembership(roomId, userId);
+    if (!membershipOk) {
+      return res.status(403).json({ error: 'You must be a member of this room to invite others' });
+    }
+
+    const users = await roomsService.searchInvitees(query.trim(), roomId);
+    res.status(200).json(users);
   } catch (err) {
     next(err);
   }

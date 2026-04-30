@@ -19,7 +19,7 @@
  */
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware.js';
-import { listRooms, createRoom, leaveRoom, listPublicRooms } from '../controllers/rooms.controller.js';
+import { listRooms, createRoom, leaveRoom, listPublicRooms, searchInvitees } from '../controllers/rooms.controller.js';
 
 const router = Router();
 
@@ -43,5 +43,19 @@ router.post('/', requireAuth, createRoom);
 
 // DELETE /api/rooms/:id/members — leave a room
 router.delete('/:id/members', requireAuth, leaveRoom);
+
+// GET /api/rooms/:id/invitees?q=<username> — search for users to invite (US-206)
+//
+// ─── ROUTE ORDERING NOTE ──────────────────────────────────────────────────────
+// This route uses the /:id wildcard and thus must come AFTER the literal /public
+// route registered above. However, since /:id/invitees has a SECOND segment
+// ("/invitees") it would never conflict with /public anyway — Express compares
+// the full path, not just the first segment. The ordering only matters for routes
+// that share the same number of path segments (e.g., /public vs /:id).
+//
+// Authorization note: the controller checks membership before running the search
+// (only room members may look up invitees). requireAuth only verifies the JWT;
+// the deeper membership check lives in the controller layer.
+router.get('/:id/invitees', requireAuth, searchInvitees);
 
 export default router;

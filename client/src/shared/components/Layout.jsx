@@ -73,6 +73,7 @@ import { useAuth }                   from '../../features/auth/hooks/useAuth';
 import { selectActiveRoomId }        from '../../features/rooms/roomsSlice';
 import { useMobile }                 from '../hooks/useMobile';
 import { useUnreadBadges }           from '../../features/chat/hooks/useUnreadBadges';
+import { useRoomInvites }            from '../hooks/useRoomInvites';
 import Sidebar                       from './Sidebar';
 
 // Shared constant so the topBar height and the Sidebar's `top` offset on mobile
@@ -99,6 +100,16 @@ export default function Layout() {
   //
   // The hook returns nothing — all its work is side-effect driven.
   useUnreadBadges();
+
+  // ── US-206: Real-time room-invite listener ────────────────────────────────
+  // Listens for 'room_added' socket events emitted by the server when another
+  // user invites this user into a room. On receipt, it invalidates the ['rooms']
+  // React Query cache so the new room appears in the sidebar immediately.
+  //
+  // Called here for the same reason as useUnreadBadges — Layout is always
+  // mounted, so the listener is always active regardless of which room (if any)
+  // the user currently has open.
+  useRoomInvites();
 
   // ── Sidebar open/close state ──────────────────────────────────────────────
   // On mobile:  controls whether the drawer sidebar is slid in or out.

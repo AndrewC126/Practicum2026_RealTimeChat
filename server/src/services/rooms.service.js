@@ -11,7 +11,8 @@
  * business rules. Keeping these concerns in separate layers makes each layer
  * independently testable and replaceable.
  */
-import * as roomsRepo from '../repositories/rooms.repository.js';
+import * as roomsRepo  from '../repositories/rooms.repository.js';
+import * as usersRepo  from '../repositories/users.repository.js';
 
 /**
  * getRooms(userId)
@@ -83,4 +84,38 @@ export async function leaveRoom(roomId, userId) {
  */
 export async function getPublicRooms(userId) {
   return roomsRepo.findAllPublic(userId);
+}
+
+/**
+ * checkMembership(roomId, userId)
+ *
+ * Returns true if `userId` is currently a member of `roomId`, false otherwise.
+ * Used by the invite controller to enforce: "Only current members can invite others."
+ * Wrapping isMember in a service function follows the project's layering convention
+ * and keeps the controller free of direct repository imports.
+ *
+ * @param {string} roomId — UUID of the room
+ * @param {string} userId — UUID of the user to check
+ * @returns {Promise<boolean>}
+ */
+export async function checkMembership(roomId, userId) {
+  return roomsRepo.isMember(roomId, userId);
+}
+
+/**
+ * searchInvitees(query, roomId)
+ *
+ * Returns users whose username partially matches `query` and who are NOT
+ * already members of `roomId`. Used to populate the InviteModal search results.
+ *
+ * Delegates directly to usersRepo — no additional business rules are needed
+ * here beyond what the repository query already enforces (exclusion of existing
+ * members and the result cap).
+ *
+ * @param {string} query  — partial username search term (at least 1 char)
+ * @param {string} roomId — UUID of the room whose members should be excluded
+ * @returns {Promise<Array<{ id: string, username: string }>>}
+ */
+export async function searchInvitees(query, roomId) {
+  return usersRepo.searchUsersNotInRoom(query, roomId);
 }

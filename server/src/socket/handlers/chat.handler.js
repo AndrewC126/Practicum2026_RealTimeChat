@@ -105,6 +105,7 @@
 import * as roomsRepo      from '../../repositories/rooms.repository.js';
 import * as messagesRepo   from '../../repositories/messages.repository.js';
 import * as messagesService from '../../services/messages.service.js';
+import * as usersRepo       from '../../repositories/users.repository.js';
 
 export function registerChatHandlers(io, socket) {
   // ── join_room ──────────────────────────────────────────────────────────────
@@ -233,6 +234,142 @@ export function registerChatHandlers(io, socket) {
   socket.on('typing_stop', ({ roomId }) => {
     const { username } = socket.data.user;
     socket.to(roomId).emit('typing_update', { username, isTyping: false });
+  });
+
+  // ── invite_user ────────────────────────────────────────────────────────────
+  //
+  // Emitted by the InviteModal when the inviter clicks the "Invite" button.
+  //
+  // Payload: { roomId: string, userId: string }
+  //   roomId — the room to invite the user into
+  //   userId — the UUID of the user being invited
+  //
+  // ─── FULL INVITE FLOW ──────────────────────────────────────────────────────
+  //
+  //   1. Verify the INVITER is a current member of the room.
+  //      AC: "Only current members of the room can invite others."
+  //      A malicious client could emit this event for any room — we must
+  //      always verify server-side, never trust the client for authorization.
+  //
+  //   2. Look up the INVITEE's username from the database.
+  //      We trust the userId the client sends, but we re-fetch the username
+  //      from the DB rather than accepting it from the client, so the system
+  //      message cannot be spoofed.
+  //
+  //   3. Call addMember(roomId, userId) — idempotent INSERT.
+  //      Returns true if a new row was inserted, false if already a member.
+  //      We only proceed to broadcast if the user was truly new (prevents
+  //      duplicate system messages if the invite button is clicked twice).
+  //
+  //   4. Create and broadcast the system message.
+  //      "Alice was added to the room by Jordan"
+  //      io.to(roomId) includes ALL current members AND the joining socket
+  //      (if the invitee is online and already subscribed to this room).
+  //      In practice the invitee is NOT yet subscribed — they will see the
+  //      system message when they open the room after the sidebar updates.
+  //
+  //   5. Emit 'room_added' to the invitee's private channel 'user:<uuid>'.
+  //      AC: "The room appears in the invited user's sidebar immediately."
+  //      The invitee's useRoomInvites hook listens for this event and calls
+  //      queryClient.invalidateQueries(['rooms']) so their sidebar refetches
+  //      and shows the new room — all without a page refresh.
+  //      If the invitee has multiple tabs open, ALL of them update because
+  //      every tab joins 'user:<uuid>' on connect (see socket/index.js).
+  //
+  //   6. Call ack({ ok: true }) so the InviteModal knows the invite succeeded
+  //      and can show "Invited ✓" on the button.
+  //
+  // ─── WHY A SOCKET EVENT AND NOT A REST ENDPOINT? ──────────────────────────
+  // A socket event lets us do everything in one server-side operation:
+  //   • DB write (addMember)
+  //   • Real-time broadcast to the room (system message via io.to(roomId))
+  //   • Real-time push to the invitee (room_added via io.to('user:<uuid>'))
+  //
+  // With a REST endpoint we could do the DB write, but we would still need
+  // a separate socket emit from somewhere to notify the invitee. Using a
+  // socket event throughout is simpler and more consistent with how
+  // join_room and leave_room are already implemented.
+  socket.on('invite_user', async ({ roomId, userId: inviteeId }, ack) => {
+    try {
+      const { id: inviterId, username: inviterUsername } = socket.data.user;
+
+      // ── Step 1: Verify inviter is a room member ─────────────────────────────
+      // isMember runs a quick indexed SELECT — very cheap.
+      const inviterIsMember = await roomsRepo.isMember(roomId, inviterId);
+      if (!inviterIsMember) {
+        // Return an error via ack — the client shows it to the user.
+        // We do NOT use socket.emit('error') here because this is an expected
+        // authorization failure, not an unexpected server error.
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'You must be a member of this room to invite others' });
+        }
+        return; // stop processing — do not add the user or send any messages
+      }
+
+      // ── Step 2: Look up the invitee's username ──────────────────────────────
+      // We re-fetch from the DB rather than trusting the client-supplied userId.
+      // If the user doesn't exist, respond gracefully instead of crashing.
+      const invitee = await usersRepo.findById(inviteeId);
+      if (!invitee) {
+        if (typeof ack === 'function') {
+          ack({ ok: false, message: 'User not found' });
+        }
+        return;
+      }
+
+      // ── Step 3: Add invitee to room_members ────────────────────────────────
+      // addMember is idempotent (ON CONFLICT DO NOTHING) and returns:
+      //   true  → a new row was inserted (first-ever join — proceed)
+      //   false → user was already a member (nothing to do — early return)
+      const isNewMember = await roomsRepo.addMember(roomId, inviteeId);
+      if (!isNewMember) {
+        // Already a member — silently succeed so the UI can still show "Invited"
+        // (the invite-search filters existing members, but race conditions could
+        // cause this path. Treating it as success is the right UX.)
+        if (typeof ack === 'function') ack({ ok: true });
+        return;
+      }
+
+      // ── Step 4: Create and broadcast the system message ────────────────────
+      // "Alice was added to the room by Jordan"
+      // The message body follows the format in the AC.
+      const saved = await messagesRepo.create({
+        roomId,
+        senderId:        inviterId,
+        body:            `${invitee.username} was added to the room by ${inviterUsername}`,
+        isSystemMessage: true,
+      });
+
+      // Attach sender username — INSERT RETURNING doesn't JOIN users.
+      const message = { ...saved, sender_username: inviterUsername };
+
+      // io.to(roomId) broadcasts to all sockets currently subscribed to this
+      // room channel (all members who have the room open).
+      io.to(roomId).emit('new_message', message);
+
+      // ── Step 5: Notify the invited user in real time ────────────────────────
+      // 'user:<uuid>' is a private per-user Socket.io channel that every socket
+      // joins on connect (see socket/index.js).
+      //
+      // Emitting 'room_added' here is what causes the invited user's sidebar to
+      // update immediately — their useRoomInvites hook receives this event and
+      // invalidates the ['rooms'] React Query cache, triggering a refetch.
+      //
+      // We also send the room object itself (from room_summary) so the client
+      // can optimistically add it to the sidebar without waiting for the refetch.
+      // For simplicity we just send the roomId and let the client refetch — this
+      // keeps the server logic simple and avoids a second DB query here.
+      io.to(`user:${inviteeId}`).emit('room_added', { roomId });
+
+      // ── Step 6: Acknowledge success to the inviter ─────────────────────────
+      if (typeof ack === 'function') ack({ ok: true });
+
+    } catch (err) {
+      console.error('invite_user error:', err);
+      if (typeof ack === 'function') {
+        ack({ ok: false, message: 'Could not invite user. Please try again.' });
+      }
+    }
   });
 
   // ── send_message ───────────────────────────────────────────────────────────

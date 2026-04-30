@@ -130,6 +130,35 @@ export async function resetUnread(roomId, userId) {
   );
 }
 
+/**
+ * isMember — check if a user belongs to a room.
+ *
+ * Returns true if a room_members row exists for (roomId, userId), false if not.
+ *
+ * Used to enforce AC: "Only current members of the room can invite others."
+ * We check this in both the REST controller (search endpoint) and the socket
+ * handler (invite_user event) so the rule is enforced at every entry point.
+ *
+ * ─── SELECT 1 ─────────────────────────────────────────────────────────────────
+ * We don't need any column values — just whether a matching row exists.
+ * `SELECT 1` is a common pattern: fetch a constant (the number 1) if a row
+ * matches. Postgres can satisfy this with an index scan without reading the
+ * actual column data, making it slightly cheaper than `SELECT *`.
+ *
+ * @param {string} roomId — UUID of the room
+ * @param {string} userId — UUID of the user
+ * @returns {Promise<boolean>}
+ */
+export async function isMember(roomId, userId) {
+  const { rows } = await pool.query(
+    'SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2',
+    [roomId, userId]
+  );
+  // rows.length === 1 → a matching row was found → user IS a member
+  // rows.length === 0 → no matching row → user is NOT a member
+  return rows.length > 0;
+}
+
 export async function findByName(name) {
   // Case-insensitive check — prevents "General" and "general" being treated
   // as different rooms, which would confuse users.
