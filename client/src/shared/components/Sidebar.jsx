@@ -73,6 +73,7 @@ import { useMobile } from '../hooks/useMobile';
 import RoomList from '../../features/rooms/components/RoomList';
 import CreateRoomModal from '../../features/rooms/components/CreateRoomModal';
 import BrowseRoomsModal from '../../features/rooms/components/BrowseRoomsModal';
+import MemberList from '../../features/presence/components/MemberList';
 
 // Must match Layout.jsx's TOP_BAR_HEIGHT so the drawer starts exactly where
 // the top bar ends. Keeping it as a local constant avoids a circular import
@@ -205,8 +206,21 @@ export default function Sidebar({ id, isOpen = false, onClose = () => {} }) {
       </div>
 
       {/*
-       * MemberList will be added here when US-401 (presence) is implemented.
+       * ── Members section (US-402) ──────────────────────────────────────────
+       * MemberList is self-contained: it reads activeRoomId from Redux and
+       * returns null when no room is selected, so we don't need a guard here.
+       *
+       * A thin divider separates the Rooms list from the Members list visually.
+       * The divider is only rendered by MemberList when it has content to show —
+       * but we render the wrapper here unconditionally for clean layout.
        */}
+      <div style={styles.divider} />
+      <div style={styles.section}>
+        <div style={styles.sectionHeader}>
+          <h2 style={styles.sectionHeading}>Members</h2>
+        </div>
+        <MemberList />
+      </div>
 
       {/*
        * Conditional rendering — React only renders CreateRoomModal when
@@ -250,6 +264,13 @@ const styles = {
 
   section: {
     padding: '0.75rem 0',
+  },
+
+  // Thin horizontal rule between the Rooms and Members sections
+  divider: {
+    height:     '1px',
+    background: 'rgba(255,255,255,0.08)',
+    margin:     '0.25rem 0.75rem',
   },
 
   // Flex row so the heading and button sit side by side

@@ -235,6 +235,45 @@ export async function getMembers(roomId) {
 }
 
 /**
+ * getMembersWithProfile — room member list with profile data for US-402.
+ *
+ * Returns every member of a room with the extra columns needed to display the
+ * profile popover when a member is clicked:
+ *   - username         — display name
+ *   - joinedAt         — when this user joined THIS room (from room_members)
+ *   - userCreatedAt    — when this user's account was created (from users)
+ *
+ * ─── COLUMN ALIASES ("joinedAt", "userCreatedAt") ────────────────────────────
+ * Postgres returns column names in snake_case by default (joined_at).
+ * Using AS "joinedAt" (with double-quotes to preserve case) makes node-postgres
+ * return camelCase keys directly, so we never have to transform them in JS.
+ *
+ * ─── WHY BOTH joined_at AND created_at? ──────────────────────────────────────
+ * The profile card shows two dates:
+ *   - "Member since"  → users.created_at  (when they registered)
+ *   - "Joined room"   → room_members.joined_at (when they joined THIS room)
+ * Both are useful — a power user might have joined the platform years ago
+ * but only recently joined this particular room.
+ *
+ * @param {string} roomId — UUID of the room
+ * @returns {Promise<Array<{ id, username, joinedAt, userCreatedAt }>>}
+ */
+export async function getMembersWithProfile(roomId) {
+  const { rows } = await pool.query(
+    `SELECT u.id,
+            u.username,
+            rm.joined_at     AS "joinedAt",
+            u.created_at     AS "userCreatedAt"
+     FROM   room_members rm
+     JOIN   users u ON u.id = rm.user_id
+     WHERE  rm.room_id = $1
+     ORDER  BY u.username`,
+    [roomId]
+  );
+  return rows;
+}
+
+/**
  * Returns every public room in the application, along with a boolean
  * `is_member` indicating whether the requesting user has already joined it.
  *

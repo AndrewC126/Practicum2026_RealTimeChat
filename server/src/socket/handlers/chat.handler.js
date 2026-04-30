@@ -159,6 +159,15 @@ export function registerChatHandlers(io, socket) {
 
         // io.to() includes the joining socket so they also see the system message.
         io.to(roomId).emit('new_message', message);
+
+        // ── US-402: Notify all room members that the member list changed ──────
+        // The MemberList component on each client listens for 'members_updated'
+        // and invalidates its React Query cache, triggering a fresh fetch of
+        // GET /api/rooms/:id/members so the new member appears immediately.
+        //
+        // We only emit this when isNewMember is true — re-opening a room you
+        // already belong to does NOT change the member list.
+        io.to(roomId).emit('members_updated', { roomId });
       }
 
       // Signal success to the caller if they provided an ack callback.
@@ -196,6 +205,11 @@ export function registerChatHandlers(io, socket) {
       // Broadcast BEFORE socket.leave() so the leaving user also receives
       // the system message and sees it in their feed before the panel closes.
       io.to(roomId).emit('new_message', message);
+
+      // ── US-402: Notify remaining members the list has changed ─────────────
+      // Must also emit BEFORE socket.leave() so the leaving socket still receives
+      // the event and can update its own MemberList view while it's visible.
+      io.to(roomId).emit('members_updated', { roomId });
 
       // Unsubscribe from the Socket.io channel.
       // Future io.to(roomId) calls will no longer reach this client.
@@ -346,6 +360,11 @@ export function registerChatHandlers(io, socket) {
       // io.to(roomId) broadcasts to all sockets currently subscribed to this
       // room channel (all members who have the room open).
       io.to(roomId).emit('new_message', message);
+
+      // ── US-402: Tell everyone in the room that the member list changed ─────
+      // The invited user is now in room_members, so every client's MemberList
+      // should refetch so the new member appears in the panel.
+      io.to(roomId).emit('members_updated', { roomId });
 
       // ── Step 5: Notify the invited user in real time ────────────────────────
       // 'user:<uuid>' is a private per-user Socket.io channel that every socket

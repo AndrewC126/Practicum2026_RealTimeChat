@@ -25,6 +25,28 @@ export async function findById(id) {
   return rows[0] ?? null;
 }
 
+/**
+ * updateLastSeen — stamp users.last_seen_at with the current server time.
+ *
+ * Called on every socket connect AND disconnect so the column always reflects
+ * the most recent interaction. This value is returned in the members endpoint
+ * (GET /api/rooms/:id/members) so the profile card can show "last seen X".
+ *
+ * ─── WHY NOW() INSTEAD OF A PASSED TIMESTAMP? ────────────────────────────────
+ * Using Postgres's NOW() is more reliable than sending a timestamp from Node:
+ *   - No clock-skew between the application server and the database server
+ *   - The timestamp is set atomically with the UPDATE, not before the query travels
+ *     across the network
+ *
+ * @param {string} userId — UUID of the user to update
+ */
+export async function updateLastSeen(userId) {
+  await pool.query(
+    'UPDATE users SET last_seen_at = NOW() WHERE id = $1',
+    [userId]
+  );
+}
+
 export async function createUser({ username, email, passwordHash }) {
   // RETURNING sends back the generated id and created_at without a second SELECT
   const { rows } = await pool.query(

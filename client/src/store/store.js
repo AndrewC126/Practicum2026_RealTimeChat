@@ -23,17 +23,19 @@
  * state by hand.
  */
 import { configureStore } from '@reduxjs/toolkit';
-import authReducer  from '../features/auth/authSlice';
-import roomsReducer from '../features/rooms/roomsSlice';
-import chatReducer  from '../features/chat/chatSlice';
+import authReducer     from '../features/auth/authSlice';
+import roomsReducer    from '../features/rooms/roomsSlice';
+import chatReducer     from '../features/chat/chatSlice';
+import presenceReducer from '../features/presence/presenceSlice';
 
 // Redux Toolkit store — ephemeral UI state only (ADR-004)
 export const store = configureStore({
   reducer: {
-    auth:  authReducer,
-    rooms: roomsReducer,
+    auth:     authReducer,
+    rooms:    roomsReducer,
     // chat holds typing indicators and unread counts (US-303)
-    chat:  chatReducer,
-    // presence reducer will be added in US-401
+    chat:     chatReducer,
+    // presence holds the { [userId]: { username, isOnline } } map (US-401, US-402)
+    presence: presenceReducer,
   },
 });

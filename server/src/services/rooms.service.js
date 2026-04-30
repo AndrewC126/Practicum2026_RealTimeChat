@@ -119,3 +119,14 @@ export async function checkMembership(roomId, userId) {
 export async function searchInvitees(query, roomId) {
   return usersRepo.searchUsersNotInRoom(query, roomId);
 }
+
+/**
+ * getRoomMembers(roomId)
+ *
+ * Returns all members of a room with their profile data (joinedAt, userCreatedAt).
+ * Used by the MemberList panel (US-402) to show who is in the room and to
+ * populate the profile card when a member is clicked.
+ */
+export async function getRoomMembers(roomId) {
+  return roomsRepo.getMembersWithProfile(roomId);
+}

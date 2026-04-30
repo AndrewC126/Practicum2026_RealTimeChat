@@ -74,6 +74,7 @@ import { selectActiveRoomId }        from '../../features/rooms/roomsSlice';
 import { useMobile }                 from '../hooks/useMobile';
 import { useUnreadBadges }           from '../../features/chat/hooks/useUnreadBadges';
 import { useRoomInvites }            from '../hooks/useRoomInvites';
+import { usePresence }               from '../../features/presence/hooks/usePresence';
 import Sidebar                       from './Sidebar';
 
 // Shared constant so the topBar height and the Sidebar's `top` offset on mobile
@@ -110,6 +111,12 @@ export default function Layout() {
   // mounted, so the listener is always active regardless of which room (if any)
   // the user currently has open.
   useRoomInvites();
+
+  // ── US-401 / US-402: Real-time presence listener ──────────────────────────
+  // Listens for 'presence_snapshot', 'user_online', and 'user_offline' socket
+  // events and keeps the Redux presenceSlice in sync. Called here so the
+  // listener is always active, regardless of which room (if any) is open.
+  usePresence();
 
   // ── Sidebar open/close state ──────────────────────────────────────────────
   // On mobile:  controls whether the drawer sidebar is slid in or out.

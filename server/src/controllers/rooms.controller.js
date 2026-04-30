@@ -17,9 +17,6 @@
  * We use req.user.id wherever we need to know which user made the request.
  */
 import * as roomsService from '../services/rooms.service.js';
-// Note: searchInvitees and checkMembership are both on roomsService (see rooms.service.js)
-// — we do not need a separate import for usersRepo here because the service layer owns
-// the cross-repository orchestration.
 
 export async function listRooms(req, res, next) {
   try {
@@ -98,6 +95,27 @@ export async function listPublicRooms(req, res, next) {
  * when the search box is empty (which would be a privacy concern on a large
  * deployment). The limit defaults to 10 results.
  */
+/**
+ * getRoomMembers — GET /api/rooms/:id/members
+ *
+ * Returns all members of a room with profile data needed for the MemberList
+ * panel and the profile popover:
+ *   { id, username, joinedAt, userCreatedAt }
+ *
+ * No membership check required here — any authenticated user who knows a
+ * roomId can list its members. This matches real-world chat apps (Discord,
+ * Slack) where member lists are visible to anyone who can access the room.
+ * Access to the room itself is already gated by join/invite flows.
+ */
+export async function getRoomMembers(req, res, next) {
+  try {
+    const members = await roomsService.getRoomMembers(req.params.id);
+    res.status(200).json(members);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function searchInvitees(req, res, next) {
   try {
     const roomId = req.params.id;      // :id segment from the URL

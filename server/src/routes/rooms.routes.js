@@ -19,7 +19,7 @@
  */
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware.js';
-import { listRooms, createRoom, leaveRoom, listPublicRooms, searchInvitees } from '../controllers/rooms.controller.js';
+import { listRooms, createRoom, leaveRoom, listPublicRooms, searchInvitees, getRoomMembers } from '../controllers/rooms.controller.js';
 
 const router = Router();
 
@@ -57,5 +57,8 @@ router.delete('/:id/members', requireAuth, leaveRoom);
 // (only room members may look up invitees). requireAuth only verifies the JWT;
 // the deeper membership check lives in the controller layer.
 router.get('/:id/invitees', requireAuth, searchInvitees);
+
+// GET /api/rooms/:id/members — fetch all members of a room with profile data (US-402)
+router.get('/:id/members', requireAuth, getRoomMembers);
 
 export default router;
