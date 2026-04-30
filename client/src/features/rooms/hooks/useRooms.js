@@ -157,3 +157,117 @@ export function useRooms() {
 
   return { rooms, isLoading, isError, createRoom, leaveRoom };
 }
+
+/**
+ * useBrowseRooms — Data hook for the Browse Rooms modal (US-205)
+ *
+ * Provides:
+ *   publicRooms    — all public rooms, each with an `is_member` boolean flag
+ *   isLoading      — true while the first fetch is in flight
+ *   isError        — true if the fetch failed
+ *   joinPublicRoom — async function(roomId): joins a room, updates the sidebar,
+ *                    and navigates the user into it
+ *
+ * ─── SEPARATE QUERY KEY ──────────────────────────────────────────────────────
+ * The sidebar uses ['rooms'] (rooms the user HAS joined).
+ * The browse modal uses ['rooms', 'public'] (ALL public rooms).
+ * Keeping them separate means they can be independently cached and invalidated.
+ *
+ * When joinPublicRoom succeeds we invalidate BOTH:
+ *   ['rooms']         → sidebar refetches and shows the newly joined room
+ *   ['rooms','public'] → browse modal refetches so the room shows "Joined"
+ *
+ * ─── staleTime: 0 ────────────────────────────────────────────────────────────
+ * Unlike the sidebar (staleTime: 30s), the browse list should always be fresh
+ * when the modal opens so the user sees accurate member counts. staleTime: 0
+ * means React Query will refetch every time the modal mounts.
+ *
+ * ─── joinPublicRoom FLOW ─────────────────────────────────────────────────────
+ * When the user clicks "Join" on a room they haven't joined:
+ *
+ *   1. Emit 'join_room' with an ack callback via Socket.io.
+ *      The server (chat.handler.js) will:
+ *        a) call socket.join(roomId)   — subscribe this socket to broadcasts
+ *        b) call addMember(roomId, userId) — idempotent DB insert
+ *        c) broadcast the system message ("Alex has joined the room")
+ *        d) call ack({ ok: true })     — signals the DB work is done
+ *
+ *   2. Wait for ack({ ok: true }) before touching local state.
+ *      Waiting ensures the DB is updated before we refetch the rooms list —
+ *      otherwise the new room might not appear in GET /api/rooms yet.
+ *
+ *   3. Invalidate ['rooms'] and ['rooms','public'] — React Query refetches both.
+ *
+ *   4. Dispatch setActiveRoom(roomId) — switches the chat panel to the new room.
+ *
+ *   5. The BrowseRoomsModal calls onClose() once this resolves.
+ *
+ * Why socket.emit instead of a REST POST /api/rooms/:id/members?
+ *   The socket event does everything in one round trip: it subscribes the socket,
+ *   persists the membership, AND broadcasts the system message. A REST call could
+ *   only do the DB insert — we'd still need a separate socket event for the
+ *   subscription and message. The socket approach is simpler and more consistent
+ *   with how join_room already works elsewhere in the app.
+ */
+export function useBrowseRooms() {
+  const socket      = useSocket();
+  const queryClient = useQueryClient();
+  const dispatch    = useDispatch();
+
+  // ── Fetch all public rooms ─────────────────────────────────────────────────
+  // Each room object looks like:
+  //   { id, name, description, member_count, created_at, is_member: true|false }
+  const {
+    data: publicRooms = [],
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ['rooms', 'public'],
+    queryFn:  () => api.get('/rooms/public').then(r => r.data),
+    staleTime: 0, // always refetch when modal opens so member counts are current
+  });
+
+  // ── Join a public room ─────────────────────────────────────────────────────
+  // Returns a Promise so BrowseRoomsModal can await it before closing.
+  //
+  // The function wraps the Socket.io acknowledgment pattern in a Promise
+  // (the same technique used by leaveRoom above).
+  function joinPublicRoom(roomId) {
+    return new Promise((resolve, reject) => {
+      if (!socket) {
+        // Socket not ready — extremely unlikely while logged in, but handle it
+        // gracefully so the user isn't left in a broken state.
+        reject(new Error('Not connected — please refresh and try again'));
+        return;
+      }
+
+      // Emit 'join_room' WITH an ack callback.
+      // The server checks `if (typeof ack === 'function') ack({ ok: true })` —
+      // the ack only fires when we provide this callback function.
+      socket.emit('join_room', { roomId }, (response) => {
+        if (response?.ok) {
+          // DB is updated, socket is subscribed, system message is broadcast.
+          // Now it's safe to sync local state:
+
+          // Refresh the sidebar room list — the joined room should now appear.
+          queryClient.invalidateQueries({ queryKey: ['rooms'] });
+
+          // Refresh the public rooms list — the joined room should now show
+          // is_member: true so the "Joined" label appears if the modal stays open.
+          queryClient.invalidateQueries({ queryKey: ['rooms', 'public'] });
+
+          // Navigate the user into the room — ChatPanel will mount and
+          // useMessages will emit 'join_room' again (server's addMember is
+          // idempotent — DO NOTHING on conflict — so no duplicate system message).
+          dispatch(setActiveRoom(roomId));
+
+          resolve();
+        } else {
+          reject(new Error(response?.message ?? 'Could not join room'));
+        }
+      });
+    });
+  }
+
+  return { publicRooms, isLoading, isError, joinPublicRoom };
+}

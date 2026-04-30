@@ -72,6 +72,7 @@ import { useState } from 'react';
 import { useMobile } from '../hooks/useMobile';
 import RoomList from '../../features/rooms/components/RoomList';
 import CreateRoomModal from '../../features/rooms/components/CreateRoomModal';
+import BrowseRoomsModal from '../../features/rooms/components/BrowseRoomsModal';
 
 // Must match Layout.jsx's TOP_BAR_HEIGHT so the drawer starts exactly where
 // the top bar ends. Keeping it as a local constant avoids a circular import
@@ -86,6 +87,11 @@ export default function Sidebar({ id, isOpen = false, onClose = () => {} }) {
   // Controls whether the Create Room modal is shown.
   // false = hidden (default), true = visible.
   const [showModal, setShowModal] = useState(false);
+
+  // Controls whether the Browse Rooms modal (US-205) is shown.
+  // Keeping these as separate boolean flags instead of a single `activeModal`
+  // string means adding a third modal later won't require refactoring the logic.
+  const [showBrowseModal, setShowBrowseModal] = useState(false);
 
   // ── Compute the style for the <aside> element ─────────────────────────────
   //
@@ -155,20 +161,39 @@ export default function Sidebar({ id, isOpen = false, onClose = () => {} }) {
       <div style={styles.section}>
 
         {/*
-         * Section header row: "ROOMS" label on the left, "+ New" button on the
-         * right. This satisfies US-202 AC: "A Create Room button is visible in
-         * the sidebar."
+         * Section header row: "ROOMS" label on the left, action buttons on the right.
+         *   "+ New"   — opens CreateRoomModal (US-202)
+         *   "Browse"  — opens BrowseRoomsModal (US-205)
+         *
+         * Both buttons sit in a small flex row on the right side of the header.
+         * Using a wrapper div lets us add more buttons in the future without
+         * changing the space-between layout of sectionHeader.
          */}
         <div style={styles.sectionHeader}>
           <h2 style={styles.sectionHeading}>Rooms</h2>
-          <button
-            onClick={() => setShowModal(true)}
-            style={styles.newRoomButton}
-            title="Create a new room"
-            aria-label="Create a new room"
-          >
-            + New
-          </button>
+
+          {/* Button group — flex row so both buttons sit side by side */}
+          <div style={styles.headerButtons}>
+            {/* Browse button — US-205 AC: "A Browse Rooms entry point is accessible from the sidebar" */}
+            <button
+              onClick={() => setShowBrowseModal(true)}
+              style={styles.newRoomButton}
+              title="Browse all public rooms"
+              aria-label="Browse all public rooms"
+            >
+              Browse
+            </button>
+
+            {/* Create button — US-202 */}
+            <button
+              onClick={() => setShowModal(true)}
+              style={styles.newRoomButton}
+              title="Create a new room"
+              aria-label="Create a new room"
+            >
+              + New
+            </button>
+          </div>
         </div>
 
         {/*
@@ -195,6 +220,15 @@ export default function Sidebar({ id, isOpen = false, onClose = () => {} }) {
        */}
       {showModal && (
         <CreateRoomModal onClose={() => setShowModal(false)} />
+      )}
+
+      {/*
+       * BrowseRoomsModal (US-205) — same conditional-render pattern as above.
+       * When showBrowseModal becomes false, the modal unmounts completely,
+       * clearing its search text and join-loading state automatically.
+       */}
+      {showBrowseModal && (
+        <BrowseRoomsModal onClose={() => setShowBrowseModal(false)} />
       )}
 
     </aside>
@@ -235,9 +269,17 @@ const styles = {
     color:         '#8b929a',
   },
 
-  // "+ New" button in the sidebar header.
+  // Flex row wrapping the "Browse" and "+ New" buttons in the section header.
+  // gap:'4px' keeps them close together without needing individual margins.
+  headerButtons: {
+    display:    'flex',
+    alignItems: 'center',
+    gap:        '4px',
+  },
+
+  // Sidebar header action buttons — "Browse" and "+ New".
   //
-  // display:'flex' + alignItems:'center' vertically centres the "+ New" text
+  // display:'flex' + alignItems:'center' vertically centres the button text
   // within the 44px min-height that index.css enforces on all <button> elements.
   // Without this, the text sits at the top of the taller button area.
   newRoomButton: {

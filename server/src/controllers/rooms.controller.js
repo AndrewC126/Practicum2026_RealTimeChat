@@ -56,3 +56,22 @@ export async function leaveRoom(req, res, next) {
     next(err);
   }
 }
+
+/**
+ * listPublicRooms — GET /api/rooms/public
+ *
+ * Returns every public room in the application, each annotated with an
+ * `is_member` boolean so the client can visually distinguish rooms the
+ * user has already joined (US-205 AC: "Joined" label).
+ *
+ * We pass req.user.id so the repository can compute is_member per-user
+ * via its LEFT JOIN on room_members.
+ */
+export async function listPublicRooms(req, res, next) {
+  try {
+    const rooms = await roomsService.getPublicRooms(req.user.id);
+    res.status(200).json(rooms);
+  } catch (err) {
+    next(err);
+  }
+}

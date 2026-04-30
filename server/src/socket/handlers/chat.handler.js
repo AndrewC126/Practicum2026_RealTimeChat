@@ -108,7 +108,18 @@ import * as messagesService from '../../services/messages.service.js';
 
 export function registerChatHandlers(io, socket) {
   // ── join_room ──────────────────────────────────────────────────────────────
-  socket.on('join_room', async ({ roomId }) => {
+  //
+  // ─── OPTIONAL ACKNOWLEDGMENT (US-205) ─────────────────────────────────────
+  // Socket.io passes an `ack` callback ONLY when the client provides one:
+  //
+  //   socket.emit('join_room', { roomId })            → ack is undefined
+  //   socket.emit('join_room', { roomId }, callback)  → ack is callback
+  //
+  // This is fully backward-compatible: existing callers (useMessages.js) that
+  // don't pass a callback are unaffected. The Browse modal (US-205) passes a
+  // callback so it can wait for DB confirmation before navigating the user into
+  // the room and updating the sidebar.
+  socket.on('join_room', async ({ roomId }, ack) => {
     try {
       const { id: userId, username } = socket.data.user;
 
@@ -148,8 +159,15 @@ export function registerChatHandlers(io, socket) {
         // io.to() includes the joining socket so they also see the system message.
         io.to(roomId).emit('new_message', message);
       }
+
+      // Signal success to the caller if they provided an ack callback.
+      // The Browse modal awaits this before invalidating the rooms cache and
+      // navigating the user into the room (US-205).
+      if (typeof ack === 'function') ack({ ok: true });
+
     } catch (err) {
       console.error('join_room error:', err);
+      if (typeof ack === 'function') ack({ ok: false, message: 'Could not join room' });
       socket.emit('error', { message: 'Could not join room' });
     }
   });

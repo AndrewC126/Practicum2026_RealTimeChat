@@ -69,3 +69,18 @@ export async function createRoom({ name, description, isPrivate, ownerId }) {
 export async function leaveRoom(roomId, userId) {
   await roomsRepo.removeMember(roomId, userId);
 }
+
+/**
+ * getPublicRooms(userId)
+ *
+ * Returns every public room with an `is_member` flag showing whether the
+ * requesting user has already joined it. Used by US-205 (Browse Rooms modal).
+ *
+ * The service layer here is thin — it just delegates to the repository.
+ * We still route through the service (instead of calling the repo directly
+ * from the controller) to keep the layered architecture consistent, and to
+ * leave a place for future business rules (e.g., filtering banned users).
+ */
+export async function getPublicRooms(userId) {
+  return roomsRepo.findAllPublic(userId);
+}

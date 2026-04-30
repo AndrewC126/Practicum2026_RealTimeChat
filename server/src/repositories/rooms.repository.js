@@ -204,3 +204,64 @@ export async function getMembers(roomId) {
   );
   return rows;
 }
+
+/**
+ * Returns every public room in the application, along with a boolean
+ * `is_member` indicating whether the requesting user has already joined it.
+ *
+ * Used by US-205 (Browse & join public rooms) to populate the browse modal.
+ * Unlike findAllForUser(), this query is NOT filtered to "rooms the user joined"
+ * — it shows ALL public rooms so users can discover ones they haven't joined yet.
+ *
+ * ─── HOW THE LEFT JOIN WORKS ──────────────────────────────────────────────────
+ * A LEFT JOIN keeps every row from the LEFT table (room_summary) even when
+ * there is NO matching row in the RIGHT table (room_members).
+ *
+ * The trick is placing the user-filter condition in the JOIN's ON clause rather
+ * than in WHERE:
+ *
+ *   LEFT JOIN room_members rm
+ *     ON  rm.room_id = rs.id    ← match the room
+ *     AND rm.user_id = $1       ← only consider THIS user's membership row
+ *
+ * Result:
+ *   • Room user has joined → rm.user_id IS NOT NULL → is_member = true
+ *   • Room user has NOT joined → no matching rm row → rm.user_id IS NULL → is_member = false
+ *
+ * If we put `AND rm.user_id = $1` in a WHERE clause instead, any room where
+ * the user is NOT a member would be filtered OUT — behaving like an INNER JOIN.
+ *
+ * ─── (rm.user_id IS NOT NULL) AS is_member ───────────────────────────────────
+ * This is a SQL boolean expression:
+ *   - When there IS a matching room_members row, rm.user_id has a value → true
+ *   - When there is NO matching row (LEFT JOIN produced NULLs), rm.user_id IS NULL → false
+ *
+ * Postgres casts the boolean to a JS-compatible true/false in the result rows.
+ *
+ * @param {string} userId — UUID of the requesting user (used for the is_member flag)
+ * @returns {Promise<Array<{ id, name, description, member_count, is_member, created_at }>>}
+ */
+export async function findAllPublic(userId) {
+  const { rows } = await pool.query(
+    `SELECT rs.id,
+            rs.name,
+            rs.description,
+            rs.member_count,
+            rs.created_at,
+            -- Cast the LEFT JOIN result to a boolean:
+            --   joined room  → rm.user_id has a value  → true
+            --   not joined   → rm.user_id is NULL       → false
+            (rm.user_id IS NOT NULL) AS is_member
+     FROM   room_summary rs
+     -- LEFT JOIN so we keep ALL public rooms regardless of membership.
+     -- The AND clause in ON restricts the join to only this user's row —
+     -- rooms with no match get NULL columns (is_member → false).
+     LEFT JOIN room_members rm
+       ON  rm.room_id = rs.id
+       AND rm.user_id = $1
+     WHERE  rs.is_private = false
+     ORDER  BY rs.name ASC`,
+    [userId]
+  );
+  return rows;
+}
